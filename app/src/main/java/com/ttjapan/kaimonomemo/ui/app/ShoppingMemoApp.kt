@@ -826,7 +826,7 @@ private fun ActiveItemsPage(
         draggingEntryId = entry.id
         draggingOffsetY = 0f
         scrollAnchor = ScrollAnchor.Item
-        onSelect(entry.id)
+        onSelect(null)
     }
 
     fun dragReorder(entry: ShoppingEntry, deltaY: Float) {
@@ -960,6 +960,10 @@ private fun ActiveItemsPage(
                     Modifier.animateItem().zIndex(0f)
                 },
                 onSelect = { selectEntry(entry) },
+                onPressStarted = {
+                    onSelect(null)
+                    onFocusedItemConsumed()
+                },
                 onEditRequested = {
                     selectEntry(entry)
                     onRequestFocus(entry.id)
@@ -1045,6 +1049,7 @@ private fun ShoppingEntryRow(
     deleteSwipeOffsetX: Float,
     modifier: Modifier = Modifier,
     onSelect: () -> Unit,
+    onPressStarted: () -> Unit,
     onEditRequested: () -> Unit,
     onFocusConsumed: () -> Unit,
     onFocused: () -> Unit,
@@ -1066,6 +1071,7 @@ private fun ShoppingEntryRow(
         if (!canDrag) return@pointerInput
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
+            down.consume()
             focusManager.clearFocus()
             onReorderStart()
             var activePointerId = down.id
@@ -1089,6 +1095,7 @@ private fun ShoppingEntryRow(
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             down.consume()
             focusManager.clearFocus(force = true)
+            onPressStarted()
             val longPress = awaitLongPressOrCancellation(down.id)
             if (longPress == null) {
                 onEditRequested()
@@ -1129,7 +1136,6 @@ private fun ShoppingEntryRow(
                 shadowElevation = if (isDragging || isDeleteSwiping) 16f else 0f
             }
             .background(if (selected) Color(0xFFE3F2FD) else Color.White)
-            .clickable(onClick = onSelect)
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
