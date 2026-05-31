@@ -103,6 +103,7 @@ import com.ttjapan.kaimonomemo.model.ShoppingEntry
 import com.ttjapan.kaimonomemo.model.ShoppingMemo
 import com.ttjapan.kaimonomemo.voice.ContinuousSpeechController
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 private enum class Screen {
     Home,
@@ -557,7 +558,7 @@ private fun MemoDetailScreen(
                         val delta = change.positionChange()
                         totalX += delta.x
                         totalY += delta.y
-                        if (totalX > DetailBackSwipeThresholdPx && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
+                        if (totalX < -DetailBackSwipeThresholdPx && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
                             change.consume()
                             onFinish()
                             break
@@ -1096,12 +1097,19 @@ private fun ShoppingEntryRow(
             down.consume()
             focusManager.clearFocus(force = true)
             onPressStarted()
-            val longPress = awaitLongPressOrCancellation(down.id)
-            if (longPress == null) {
+            val releasedBeforeLongPress = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull false
+                    change.consume()
+                    if (!change.pressed) return@withTimeoutOrNull true
+                }
+            }
+            if (releasedBeforeLongPress == true) {
                 onEditRequested()
                 return@awaitEachGesture
             }
-            longPress.consume()
+
             onDeleteSwipeStart()
             var activePointerId = down.id
             while (true) {
@@ -1109,7 +1117,7 @@ private fun ShoppingEntryRow(
                 val change = event.changes.firstOrNull { it.id == activePointerId } ?: break
                 if (!change.pressed) break
                 val delta = change.positionChange()
-                if (delta.x != 0f) {
+                if (delta.x != 0f || delta.y != 0f) {
                     change.consume()
                     onDeleteSwipeDrag(delta.x)
                 }
