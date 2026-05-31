@@ -25,7 +25,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -34,16 +37,15 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -61,15 +63,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -77,6 +82,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.ttjapan.kaimonomemo.R
@@ -96,6 +102,46 @@ private enum class Screen {
     Favorites
 }
 
+private enum class VoiceTarget {
+    Title,
+    Item
+}
+
+private val BottomBarHeight = 86.dp
+private val FabKeyboardGap = 10.dp
+private val DetailListExtraBottom = 96.dp
+
+private fun pruneBlankEntries(memo: ShoppingMemo) {
+    memo.entries.removeAll { it.name.isBlank() }
+    memo.deletedEntries.removeAll { it.name.isBlank() }
+}
+
+private fun ensureDisplayBlankEntry(memo: ShoppingMemo): ShoppingEntry? {
+    val filled = memo.entries.filter { it.name.isNotBlank() }
+    val blank = memo.entries.firstOrNull { it.name.isBlank() }
+    memo.entries.clear()
+    memo.entries.addAll(filled)
+    if (blank != null) {
+        memo.entries.add(blank)
+        return blank
+    }
+    if (filled.isEmpty()) {
+        val newBlank = ShoppingEntry(name = "")
+        memo.entries.add(newBlank)
+        return newBlank
+    }
+    return null
+}
+
+private fun requestBlankEntry(memo: ShoppingMemo): ShoppingEntry {
+    val filled = memo.entries.filter { it.name.isNotBlank() }
+    val blank = memo.entries.firstOrNull { it.name.isBlank() } ?: ShoppingEntry(name = "")
+    memo.entries.clear()
+    memo.entries.addAll(filled)
+    memo.entries.add(blank)
+    return blank
+}
+
 @Composable
 fun ShoppingMemoApp() {
     val context = LocalContext.current
@@ -110,14 +156,21 @@ fun ShoppingMemoApp() {
         currentScreen = Screen.Detail
     }
     fun finishDetail() {
-        selectedMemo?.let { assignDefaultTitleIfBlank(it, memos) }
+        selectedMemo?.let { memo ->
+            pruneBlankEntries(memo)
+            if (memo.title.isBlank() && memo.entries.none { it.name.isNotBlank() } && memo.deletedEntries.none { it.name.isNotBlank() }) {
+                memos.remove(memo)
+                selectedMemoId = null
+            } else {
+                assignDefaultTitleIfBlank(memo, memos)
+            }
+        }
         persist()
         currentScreen = Screen.Home
     }
     fun addMemo() {
         val memo = ShoppingMemo(entries = listOf(ShoppingEntry(name = "")))
         memos.add(memo)
-        persist()
         openMemo(memo)
     }
 
@@ -388,18 +441,58 @@ private fun MemoDetailScreen(
     onChanged: () -> Unit
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
+    val imeBottom = with(density) { WindowInsets.ime.getBottom(this).toDp() }
+    val imeVisible = imeBottom > 0.dp
+    val fabBottomPadding = if (imeVisible) {
+        (imeBottom - BottomBarHeight + FabKeyboardGap).coerceAtLeast(FabKeyboardGap)
+    } else {
+        22.dp
+    }
+    val listBottomPadding = if (imeVisible) {
+        (imeBottom - BottomBarHeight + DetailListExtraBottom).coerceAtLeast(DetailListExtraBottom)
+    } else {
+        DetailListExtraBottom
+    }
     val tabs = listOf("アイテム", "削除済")
     val pagerState = rememberPagerState(pageCount = { tabs.size })
     val scope = rememberCoroutineScope()
     val titleFocusRequester = remember { FocusRequester() }
     var selectedEntryId by remember { mutableStateOf<String?>(null) }
-    var showTitleRequiredDialog by remember { mutableStateOf(false) }
+    var voiceTarget by remember { mutableStateOf(if (memo.title.isBlank()) VoiceTarget.Title else VoiceTarget.Item) }
+    var focusedItemRequestId by remember { mutableStateOf<String?>(null) }
+
+    fun editableEntry(): ShoppingEntry {
+        return requestBlankEntry(memo)
+    }
+
+    fun moveToItemInput() {
+        val entry = editableEntry()
+        selectedEntryId = entry.id
+        focusedItemRequestId = entry.id
+        voiceTarget = VoiceTarget.Item
+    }
+
+    fun handleVoiceText(text: String) {
+        val cleaned = text.trim()
+        if (cleaned.isBlank()) return
+
+        if (voiceTarget == VoiceTarget.Title || memo.title.isBlank()) {
+            memo.title = cleaned
+            moveToItemInput()
+        } else {
+            val entry = memo.entries.firstOrNull { it.id == selectedEntryId && it.name.isBlank() }
+                ?: memo.entries.firstOrNull { it.name.isBlank() }
+                ?: ShoppingEntry(name = "").also { memo.entries.add(it) }
+            entry.name = cleaned
+            selectedEntryId = entry.id
+            focusedItemRequestId = entry.id
+        }
+        onChanged()
+    }
 
     val speechController = remember(memo.id) {
-        ContinuousSpeechController(context) { text ->
-            memo.entries.add(ShoppingEntry(name = text))
-            onChanged()
-        }
+        ContinuousSpeechController(context, ::handleVoiceText)
     }
     DisposableEffect(speechController) {
         onDispose { speechController.destroy() }
@@ -422,7 +515,7 @@ private fun MemoDetailScreen(
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                OutlinedTextField(
+                BasicTextField(
                     value = memo.title,
                     onValueChange = {
                         memo.title = it
@@ -430,10 +523,25 @@ private fun MemoDetailScreen(
                     },
                     modifier = Modifier
                         .weight(1f)
-                        .focusRequester(titleFocusRequester),
-                    textStyle = TextStyle(fontSize = 24.sp, fontWeight = FontWeight.Bold),
+                        .focusRequester(titleFocusRequester)
+                        .onFocusChanged {
+                            if (it.isFocused) voiceTarget = VoiceTarget.Title
+                        },
+                    textStyle = TextStyle(fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.Black),
                     singleLine = true,
-                    placeholder = { Text("タイトル入力") }
+                    cursorBrush = SolidColor(Color(0xFF1976D2)),
+                    decorationBox = { innerTextField ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 20.dp)
+                        ) {
+                            if (memo.title.isBlank()) {
+                                Text("タイトルを入力してください", color = Color(0xFFC0C4CC), fontSize = 24.sp)
+                            }
+                            innerTextField()
+                        }
+                    }
                 )
                 if (pagerState.currentPage == 1 && memo.deletedEntries.isNotEmpty()) {
                     TextButton(
@@ -477,7 +585,20 @@ private fun MemoDetailScreen(
             Divider(color = Color(0xFFE0E0E0))
             HorizontalPager(state = pagerState, modifier = Modifier.weight(1f)) { page ->
                 if (page == 0) {
-                    ActiveItemsPage(memo, selectedEntryId, { selectedEntryId = it }, onChanged)
+                    ActiveItemsPage(
+                        memo = memo,
+                        selectedEntryId = selectedEntryId,
+                        focusedItemRequestId = focusedItemRequestId,
+                        onFocusedItemConsumed = { focusedItemRequestId = null },
+                        onSelect = { selectedEntryId = it },
+                        onRequestFocus = { focusedItemRequestId = it },
+                        onEntryFocused = { voiceTarget = VoiceTarget.Item },
+                        onEntryFocusCleared = { id ->
+                            if (selectedEntryId == id) selectedEntryId = null
+                        },
+                        bottomPadding = listBottomPadding,
+                        onChanged = onChanged
+                    )
                 } else {
                     DeletedItemsPage(
                         memo = memo,
@@ -495,13 +616,8 @@ private fun MemoDetailScreen(
             controller = speechController,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 22.dp, bottom = 22.dp),
+                .padding(end = 22.dp, bottom = fabBottomPadding),
             onClick = {
-                if (memo.title.isBlank()) {
-                    showTitleRequiredDialog = true
-                    titleFocusRequester.requestFocus()
-                    return@MicFab
-                }
                 if (speechController.partialText.isNotBlank()) {
                     speechController.commitPartial()
                     return@MicFab
@@ -516,35 +632,82 @@ private fun MemoDetailScreen(
             }
         )
     }
-
-    if (showTitleRequiredDialog) {
-        AlertDialog(
-            onDismissRequest = { showTitleRequiredDialog = false },
-            title = { Text("タイトルを入力してください") },
-            confirmButton = {
-                TextButton(onClick = { showTitleRequiredDialog = false }) { Text("OK") }
-            }
-        )
-    }
 }
 
 @Composable
 private fun ActiveItemsPage(
     memo: ShoppingMemo,
     selectedEntryId: String?,
-    onSelect: (String) -> Unit,
+    focusedItemRequestId: String?,
+    onFocusedItemConsumed: () -> Unit,
+    onSelect: (String?) -> Unit,
+    onRequestFocus: (String) -> Unit,
+    onEntryFocused: () -> Unit,
+    onEntryFocusCleared: (String) -> Unit,
+    bottomPadding: Dp,
     onChanged: () -> Unit
 ) {
-    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 100.dp)) {
+    val density = LocalDensity.current
+    val listState = rememberLazyListState()
+    val scrollLiftPx = with(density) { 96.dp.roundToPx() }
+
+    LaunchedEffect(memo.entries.size) {
+        ensureDisplayBlankEntry(memo)
+    }
+
+    LaunchedEffect(focusedItemRequestId, selectedEntryId, bottomPadding) {
+        val targetId = focusedItemRequestId ?: selectedEntryId ?: return@LaunchedEffect
+        val index = memo.entries.indexOfFirst { it.id == targetId }
+        if (index >= 0) {
+            listState.animateScrollToItem(index = index, scrollOffset = scrollLiftPx)
+        }
+    }
+
+    fun selectEntry(entry: ShoppingEntry) {
+        val blanksToRemove = memo.entries.filter { it.id != entry.id && it.name.isBlank() }
+        if (blanksToRemove.isNotEmpty() && memo.entries.size > blanksToRemove.size) {
+            memo.entries.removeAll(blanksToRemove)
+            onChanged()
+        }
+        onSelect(entry.id)
+    }
+
+    fun moveEntry(entry: ShoppingEntry, direction: Int) {
+        if (entry.name.isBlank()) return
+        val filled = memo.entries.filter { it.name.isNotBlank() }.toMutableList()
+        val from = filled.indexOf(entry)
+        if (from < 0) return
+        val to = (from + direction).coerceIn(0, filled.lastIndex)
+        if (from == to) return
+        filled.removeAt(from)
+        filled.add(to, entry)
+        val blank = memo.entries.firstOrNull { it.name.isBlank() }
+        memo.entries.clear()
+        memo.entries.addAll(filled)
+        if (blank != null) memo.entries.add(blank)
+        onChanged()
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        state = listState,
+        contentPadding = PaddingValues(bottom = bottomPadding)
+    ) {
         items(memo.entries, key = { it.id }) { entry ->
             ShoppingEntryRow(
                 entry = entry,
                 selected = selectedEntryId == entry.id,
-                canMoveUp = memo.entries.indexOf(entry) > 0,
-                canMoveDown = memo.entries.indexOf(entry) < memo.entries.lastIndex,
-                onSelect = { onSelect(entry.id) },
+                shouldRequestFocus = focusedItemRequestId == entry.id,
+                onSelect = { selectEntry(entry) },
+                onFocusConsumed = onFocusedItemConsumed,
+                onFocused = {
+                    onSelect(entry.id)
+                    onEntryFocused()
+                },
+                onFocusCleared = { onEntryFocusCleared(entry.id) },
                 onNameChanged = {
                     entry.name = it
+                    ensureDisplayBlankEntry(memo)
                     onChanged()
                 },
                 onChecked = {
@@ -560,21 +723,15 @@ private fun ActiveItemsPage(
                     memo.deletedEntries.add(entry.copy(checked = false))
                     onChanged()
                 },
-                onMove = { direction ->
-                    val index = memo.entries.indexOf(entry)
-                    val target = index + direction
-                    if (target in 0 until memo.entries.size) {
-                        memo.entries.removeAt(index)
-                        memo.entries.add(target, entry)
-                        onChanged()
-                    }
-                }
+                onMove = { direction -> moveEntry(entry, direction) }
             )
         }
         item {
             TextButton(
                 onClick = {
-                    memo.entries.add(ShoppingEntry(name = ""))
+                    val entry = requestBlankEntry(memo)
+                    onSelect(entry.id)
+                    onRequestFocus(entry.id)
                     onChanged()
                 },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
@@ -589,46 +746,88 @@ private fun ActiveItemsPage(
 private fun ShoppingEntryRow(
     entry: ShoppingEntry,
     selected: Boolean,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
+    shouldRequestFocus: Boolean,
     onSelect: () -> Unit,
+    onFocusConsumed: () -> Unit,
+    onFocused: () -> Unit,
+    onFocusCleared: () -> Unit,
     onNameChanged: (String) -> Unit,
     onChecked: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onMove: (Int) -> Unit
 ) {
+    val focusRequester = remember { FocusRequester() }
+    val dragThreshold = with(LocalDensity.current) { 56.dp.toPx() }
+    var dragDistance by remember { mutableStateOf(0f) }
+    val canDrag = entry.name.isNotBlank()
+
+    LaunchedEffect(shouldRequestFocus) {
+        if (shouldRequestFocus) {
+            focusRequester.requestFocus()
+            onFocusConsumed()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(if (selected) Color(0xFFE3F2FD) else Color.White)
             .clickable(onClick = onSelect)
+            .pointerInput(entry.id, canDrag) {
+                if (!canDrag) return@pointerInput
+                detectDragGesturesAfterLongPress(
+                    onDragStart = {
+                        dragDistance = 0f
+                        onSelect()
+                    },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        dragDistance += amount.y
+                        if (dragDistance > dragThreshold) {
+                            onMove(1)
+                            dragDistance = 0f
+                        } else if (dragDistance < -dragThreshold) {
+                            onMove(-1)
+                            dragDistance = 0f
+                        }
+                    },
+                    onDragEnd = { dragDistance = 0f },
+                    onDragCancel = { dragDistance = 0f }
+                )
+            }
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = entry.checked, onCheckedChange = onChecked)
-            OutlinedTextField(
+            BasicTextField(
                 value = entry.name,
                 onValueChange = onNameChanged,
-                modifier = Modifier.weight(1f),
-                singleLine = true,
+                singleLine = false,
+                modifier = Modifier
+                    .weight(1f)
+                    .focusRequester(focusRequester)
+                    .onFocusChanged {
+                        if (it.isFocused) onFocused() else onFocusCleared()
+                    }
+                    .padding(vertical = 12.dp),
+                minLines = 1,
+                maxLines = 8,
                 textStyle = TextStyle(
                     fontSize = 20.sp,
+                    color = Color.Black,
                     textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None
                 ),
+                cursorBrush = SolidColor(Color(0xFF1976D2)),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                placeholder = { Text("買うもの") }
+                decorationBox = { innerTextField ->
+                    if (entry.name.isBlank()) {
+                        Text("未入力", color = Color(0xFF9E9E9E), fontSize = 20.sp)
+                    }
+                    innerTextField()
+                }
             )
             IconButton(onClick = onDelete) {
                 Text("🗑", fontSize = 24.sp)
-            }
-        }
-        if (selected) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 48.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(enabled = canMoveUp, onClick = { onMove(-1) }) { Text("上へ") }
-                Button(enabled = canMoveDown, onClick = { onMove(1) }) { Text("下へ") }
             }
         }
     }

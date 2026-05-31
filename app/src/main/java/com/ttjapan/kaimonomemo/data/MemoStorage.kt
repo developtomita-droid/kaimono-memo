@@ -30,13 +30,14 @@ fun loadMemos(context: Context): List<ShoppingMemo> {
 
 fun saveMemos(context: Context, memos: List<ShoppingMemo>) {
     val array = JSONArray()
-    memos.forEach { memo ->
+    memos.filter { it.title.isNotBlank() || it.entries.any { entry -> entry.name.isNotBlank() } || it.deletedEntries.any { entry -> entry.name.isNotBlank() } }
+        .forEach { memo ->
         array.put(JSONObject().apply {
             put("id", memo.id)
             put("title", memo.title)
             put("favorite", memo.favorite)
             put("entries", JSONArray().also { entries ->
-                memo.entries.forEach { entry ->
+                memo.entries.filter { it.name.isNotBlank() }.forEach { entry ->
                     entries.put(JSONObject().apply {
                         put("id", entry.id)
                         put("name", entry.name)
@@ -45,7 +46,7 @@ fun saveMemos(context: Context, memos: List<ShoppingMemo>) {
                 }
             })
             put("deletedEntries", JSONArray().also { entries ->
-                memo.deletedEntries.forEach { entry ->
+                memo.deletedEntries.filter { it.name.isNotBlank() }.forEach { entry ->
                     entries.put(JSONObject().apply {
                         put("id", entry.id)
                         put("name", entry.name)
