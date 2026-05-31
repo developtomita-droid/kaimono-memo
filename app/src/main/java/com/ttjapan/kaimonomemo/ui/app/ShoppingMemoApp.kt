@@ -12,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -75,6 +76,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -124,6 +126,7 @@ private val BottomBarHeight = 86.dp
 private val FabKeyboardGap = 10.dp
 private val DetailListExtraBottom = 96.dp
 private const val AddListItemKey = "add-list-item"
+private const val DetailBackSwipeThresholdPx = 140f
 
 private fun pruneBlankEntries(memo: ShoppingMemo) {
     memo.entries.removeAll { it.name.isBlank() }
@@ -482,6 +485,7 @@ private fun MemoDetailScreen(
     var selectedEntryId by remember { mutableStateOf<String?>(null) }
     var voiceTarget by remember { mutableStateOf(if (memo.title.isBlank()) VoiceTarget.Title else VoiceTarget.Item) }
     var focusedItemRequestId by remember { mutableStateOf<String?>(null) }
+    var addButtonScrollRequest by remember { mutableStateOf(0) }
 
     fun editableEntry(): ShoppingEntry {
         return requestBlankEntry(memo)
@@ -500,14 +504,20 @@ private fun MemoDetailScreen(
 
         if (voiceTarget == VoiceTarget.Title || memo.title.isBlank()) {
             memo.title = cleaned
-            moveToItemInput()
+            val entry = editableEntry()
+            selectedEntryId = entry.id
+            focusedItemRequestId = null
+            voiceTarget = VoiceTarget.Item
         } else {
             val entry = memo.entries.firstOrNull { it.id == selectedEntryId && it.name.isBlank() }
                 ?: memo.entries.firstOrNull { it.name.isBlank() }
                 ?: ShoppingEntry(name = "").also { memo.entries.add(it) }
             entry.name = cleaned
-            selectedEntryId = entry.id
-            focusedItemRequestId = entry.id
+            ensureDisplayBlankEntry(memo)
+            selectedEntryId = null
+            focusedItemRequestId = null
+            voiceTarget = VoiceTarget.Item
+            addButtonScrollRequest++
         }
         onChanged()
     }
@@ -530,7 +540,32 @@ private fun MemoDetailScreen(
         if (memo.title.isBlank()) titleFocusRequester.requestFocus()
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(pagerState.currentPage) {
+                if (pagerState.currentPage != 0) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    var totalX = 0f
+                    var totalY = 0f
+                    var activePointerId = down.id
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == activePointerId } ?: break
+                        if (!change.pressed) break
+                        val delta = change.positionChange()
+                        totalX += delta.x
+                        totalY += delta.y
+                        if (totalX > DetailBackSwipeThresholdPx && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
+                            change.consume()
+                            onFinish()
+                            break
+                        }
+                    }
+                }
+            }
+    ) {
         Column(Modifier.fillMaxSize()) {
             Row(
                 modifier = Modifier
@@ -616,6 +651,7 @@ private fun MemoDetailScreen(
                         memo = memo,
                         selectedEntryId = selectedEntryId,
                         focusedItemRequestId = focusedItemRequestId,
+                        addButtonScrollRequest = addButtonScrollRequest,
                         onFocusedItemConsumed = { focusedItemRequestId = null },
                         onSelect = { selectedEntryId = it },
                         onRequestFocus = { focusedItemRequestId = it },
@@ -681,6 +717,7 @@ private fun ActiveItemsPage(
     memo: ShoppingMemo,
     selectedEntryId: String?,
     focusedItemRequestId: String?,
+    addButtonScrollRequest: Int,
     onFocusedItemConsumed: () -> Unit,
     onSelect: (String?) -> Unit,
     onRequestFocus: (String) -> Unit,
@@ -696,9 +733,13 @@ private fun ActiveItemsPage(
     val addButtonLiftPx = with(density) { 72.dp.roundToPx() }
     val bottomPaddingPx = with(density) { bottomPadding.roundToPx() }
     val fallbackRowHeightPx = with(density) { 56.dp.toPx() }
+    val deleteSwipeThresholdPx = with(density) { 104.dp.toPx() }
     var scrollAnchor by remember { mutableStateOf(ScrollAnchor.Item) }
     var draggingEntryId by remember { mutableStateOf<String?>(null) }
     var draggingOffsetY by remember { mutableStateOf(0f) }
+    var deleteSwipeEntryId by remember { mutableStateOf<String?>(null) }
+    var deleteSwipeOffsetX by remember { mutableStateOf(0f) }
+    var previousBottomPadding by remember { mutableStateOf(bottomPadding) }
 
     fun bottomAlignedOffset(extraLiftPx: Int): Int {
         val viewportHeight = listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
@@ -723,6 +764,22 @@ private fun ActiveItemsPage(
         if (scrollAnchor != ScrollAnchor.AddButton) return@LaunchedEffect
         val addIndex = memo.entries.count { !it.checked }
         listState.animateScrollToItem(index = addIndex, scrollOffset = bottomAlignedOffset(addButtonLiftPx))
+    }
+
+    LaunchedEffect(addButtonScrollRequest, bottomPadding, memo.entries.size) {
+        if (addButtonScrollRequest <= 0) return@LaunchedEffect
+        val addIndex = memo.entries.count { !it.checked }
+        listState.animateScrollToItem(index = addIndex, scrollOffset = bottomAlignedOffset(addButtonLiftPx))
+    }
+
+    LaunchedEffect(bottomPadding) {
+        if (bottomPadding < previousBottomPadding) {
+            draggingEntryId = null
+            draggingOffsetY = 0f
+            deleteSwipeEntryId = null
+            deleteSwipeOffsetX = 0f
+        }
+        previousBottomPadding = bottomPadding
     }
 
     fun selectEntry(entry: ShoppingEntry) {
@@ -836,6 +893,31 @@ private fun ActiveItemsPage(
         draggingOffsetY = 0f
     }
 
+    fun startDeleteSwipe(entry: ShoppingEntry) {
+        if (entry.name.isBlank() || entry.checked) return
+        deleteSwipeEntryId = entry.id
+        deleteSwipeOffsetX = 0f
+        draggingEntryId = null
+        draggingOffsetY = 0f
+        onSelect(null)
+    }
+
+    fun dragDeleteSwipe(entry: ShoppingEntry, deltaX: Float) {
+        if (deleteSwipeEntryId != entry.id) return
+        deleteSwipeOffsetX = (deleteSwipeOffsetX + deltaX).coerceAtLeast(0f)
+    }
+
+    fun endDeleteSwipe(entry: ShoppingEntry) {
+        if (deleteSwipeEntryId == entry.id && deleteSwipeOffsetX >= deleteSwipeThresholdPx) {
+            memo.entries.remove(entry)
+            memo.deletedEntries.add(entry.copy(checked = false))
+            ensureDisplayBlankEntry(memo)
+            onChanged()
+        }
+        deleteSwipeEntryId = null
+        deleteSwipeOffsetX = 0f
+    }
+
     fun markDone(entry: ShoppingEntry) {
         if (entry.name.isBlank()) return
         memo.entries.remove(entry)
@@ -868,12 +950,20 @@ private fun ActiveItemsPage(
                 shouldRequestFocus = focusedItemRequestId == entry.id,
                 isDragging = draggingEntryId == entry.id,
                 dragOffsetY = if (draggingEntryId == entry.id) draggingOffsetY else 0f,
+                isDeleteSwiping = deleteSwipeEntryId == entry.id,
+                deleteSwipeOffsetX = if (deleteSwipeEntryId == entry.id) deleteSwipeOffsetX else 0f,
                 modifier = if (draggingEntryId == entry.id) {
+                    Modifier.zIndex(1f)
+                } else if (deleteSwipeEntryId == entry.id) {
                     Modifier.zIndex(1f)
                 } else {
                     Modifier.animateItem().zIndex(0f)
                 },
                 onSelect = { selectEntry(entry) },
+                onEditRequested = {
+                    selectEntry(entry)
+                    onRequestFocus(entry.id)
+                },
                 onFocusConsumed = onFocusedItemConsumed,
                 onFocused = {
                     onSelect(entry.id)
@@ -894,7 +984,10 @@ private fun ActiveItemsPage(
                 },
                 onReorderStart = { startReorder(entry) },
                 onReorderDrag = { deltaY -> dragReorder(entry, deltaY) },
-                onReorderEnd = { endReorder() }
+                onReorderEnd = { endReorder() },
+                onDeleteSwipeStart = { startDeleteSwipe(entry) },
+                onDeleteSwipeDrag = { deltaX -> dragDeleteSwipe(entry, deltaX) },
+                onDeleteSwipeEnd = { endDeleteSwipe(entry) }
             )
         }
         item(key = AddListItemKey) {
@@ -948,8 +1041,11 @@ private fun ShoppingEntryRow(
     shouldRequestFocus: Boolean,
     isDragging: Boolean,
     dragOffsetY: Float,
+    isDeleteSwiping: Boolean,
+    deleteSwipeOffsetX: Float,
     modifier: Modifier = Modifier,
     onSelect: () -> Unit,
+    onEditRequested: () -> Unit,
     onFocusConsumed: () -> Unit,
     onFocused: () -> Unit,
     onFocusCleared: () -> Unit,
@@ -958,7 +1054,10 @@ private fun ShoppingEntryRow(
     onDelete: () -> Unit,
     onReorderStart: () -> Unit,
     onReorderDrag: (Float) -> Unit,
-    onReorderEnd: () -> Unit
+    onReorderEnd: () -> Unit,
+    onDeleteSwipeStart: () -> Unit,
+    onDeleteSwipeDrag: (Float) -> Unit,
+    onDeleteSwipeEnd: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
@@ -984,6 +1083,33 @@ private fun ShoppingEntryRow(
             onReorderEnd()
         }
     }
+    val rowSwipeModifier = Modifier.pointerInput(entry.id, canDrag) {
+        if (!canDrag) return@pointerInput
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            down.consume()
+            focusManager.clearFocus(force = true)
+            val longPress = awaitLongPressOrCancellation(down.id)
+            if (longPress == null) {
+                onEditRequested()
+                return@awaitEachGesture
+            }
+            longPress.consume()
+            onDeleteSwipeStart()
+            var activePointerId = down.id
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == activePointerId } ?: break
+                if (!change.pressed) break
+                val delta = change.positionChange()
+                if (delta.x != 0f) {
+                    change.consume()
+                    onDeleteSwipeDrag(delta.x)
+                }
+            }
+            onDeleteSwipeEnd()
+        }
+    }
 
     LaunchedEffect(shouldRequestFocus) {
         if (shouldRequestFocus) {
@@ -996,10 +1122,11 @@ private fun ShoppingEntryRow(
         modifier = modifier
             .fillMaxWidth()
             .graphicsLayer {
+                translationX = deleteSwipeOffsetX
                 translationY = dragOffsetY
-                scaleX = if (isDragging) 1.02f else 1f
-                scaleY = if (isDragging) 1.02f else 1f
-                shadowElevation = if (isDragging) 16f else 0f
+                scaleX = if (isDragging || isDeleteSwiping) 1.02f else 1f
+                scaleY = if (isDragging || isDeleteSwiping) 1.02f else 1f
+                shadowElevation = if (isDragging || isDeleteSwiping) 16f else 0f
             }
             .background(if (selected) Color(0xFFE3F2FD) else Color.White)
             .clickable(onClick = onSelect)
@@ -1007,38 +1134,50 @@ private fun ShoppingEntryRow(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             NumberHandle(displayNumber = displayNumber, modifier = handleModifier)
-            BasicTextField(
-                value = entry.name,
-                onValueChange = onNameChanged,
-                singleLine = false,
+            Box(
                 modifier = Modifier
                     .weight(1f)
+            ) {
+                BasicTextField(
+                    value = entry.name,
+                    onValueChange = onNameChanged,
+                    enabled = selected && !isDeleteSwiping,
+                    singleLine = false,
+                    modifier = Modifier
+                        .fillMaxWidth()
                     .focusRequester(focusRequester)
                     .onFocusChanged {
                         if (it.isFocused) onFocused() else onFocusCleared()
                     }
                     .padding(vertical = 12.dp),
-                minLines = 1,
-                maxLines = 8,
-                textStyle = TextStyle(
-                    fontSize = 20.sp,
-                    color = Color.Black,
-                    textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None
-                ),
-                cursorBrush = SolidColor(Color(0xFF1976D2)),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                decorationBox = { innerTextField ->
-                    if (entry.name.isBlank()) {
-                        Text("未入力", color = Color(0xFF9E9E9E), fontSize = 20.sp)
+                    minLines = 1,
+                    maxLines = 8,
+                    textStyle = TextStyle(
+                        fontSize = 20.sp,
+                        color = Color.Black,
+                        textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None
+                    ),
+                    cursorBrush = SolidColor(Color(0xFF1976D2)),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    decorationBox = { innerTextField ->
+                        if (entry.name.isBlank()) {
+                            Text("未入力", color = Color(0xFF9E9E9E), fontSize = 20.sp)
+                        }
+                        innerTextField()
                     }
-                    innerTextField()
-                }
-            )
+                )
+                Box(modifier = Modifier.matchParentSize().then(rowSwipeModifier))
+            }
             TextButton(
                 enabled = entry.name.isNotBlank(),
                 onClick = onComplete
             ) {
-                Text("完了", color = if (entry.name.isBlank()) Color(0xFFBBBBBB) else Color(0xFF1976D2), fontSize = 16.sp)
+                Text(
+                    text = if (isDeleteSwiping) "→ 🗑" else "完了",
+                    color = if (isDeleteSwiping) Color(0xFFD32F2F) else if (entry.name.isBlank()) Color(0xFFBBBBBB) else Color(0xFF1976D2),
+                    fontSize = 16.sp,
+                    fontWeight = if (isDeleteSwiping) FontWeight.Bold else FontWeight.Normal
+                )
             }
         }
     }
@@ -1144,8 +1283,8 @@ private fun DeletedItemsPage(
                     modifier = Modifier.padding(end = 10.dp)
                 )
                 Text(entry.name.ifBlank { "無題のアイテム" }, fontSize = 19.sp, color = Color(0xFF666666), modifier = Modifier.weight(1f))
-                TextButton(onClick = { onErase(entry) }) { Text("消去", color = Color(0xFFD32F2F)) }
                 RestoreIconButton(onClick = { onRestore(entry) })
+                TextButton(onClick = { onErase(entry) }) { Text("消去", color = Color(0xFFD32F2F)) }
             }
             Divider(color = Color(0xFFE0E0E0))
         }
