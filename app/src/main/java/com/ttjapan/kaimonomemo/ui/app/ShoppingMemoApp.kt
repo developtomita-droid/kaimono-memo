@@ -935,6 +935,35 @@ private fun ActiveItemsPage(
         }
     }
 
+    fun isDraggedNearTopEdge(entry: ShoppingEntry): Boolean {
+        val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
+        val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
+            ?: return false
+        val viewportStart = listState.layoutInfo.viewportStartOffset
+        val autoScrollStart = viewportStart + bottomPaddingPx
+        val visualTop = itemInfo.offset + draggingOffsetY
+        return visualTop <= autoScrollStart + itemInfo.size * 0.35f
+    }
+
+    fun pinDraggedEntryToTopAfterLayout(entry: ShoppingEntry) {
+        scope.launch {
+            withFrameNanos { }
+            if (draggingEntryId != entry.id) return@launch
+            val targetIndex = listIndexForEntry(entry)
+            if (targetIndex < 0) return@launch
+            draggingOffsetY = 0f
+            bottomClampGapY = 0f
+            topClampGapY = 0f
+            listState.scrollToItem(targetIndex)
+            withFrameNanos { }
+            if (draggingEntryId == entry.id) {
+                val group = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
+                val groupIndex = group.indexOf(entry)
+                autoReorderDirection = if (dragDirectionY < 0 && groupIndex > 0) -1 else 0
+            }
+        }
+    }
+
     fun startReorder(entry: ShoppingEntry) {
         if (entry.name.isBlank()) return
         draggingEntryId = entry.id
@@ -1038,7 +1067,11 @@ private fun ActiveItemsPage(
             draggingOffsetY = 0f
         }
         if (movedDuringDrag) {
-            keepDraggedEntryVisibleAfterLayout(entry)
+            if (dragDirectionY < 0 && isDraggedNearTopEdge(entry)) {
+                pinDraggedEntryToTopAfterLayout(entry)
+            } else {
+                keepDraggedEntryVisibleAfterLayout(entry)
+            }
         } else {
             gentlyKeepDraggedEntryVisible(entry)
         }
@@ -1067,11 +1100,14 @@ private fun ActiveItemsPage(
             }
             val neighborHeight = visibleItemHeightPx(neighbor)
             if (moveEntry(entry, direction)) {
-                draggingOffsetY += if (direction > 0) -neighborHeight else neighborHeight
-                val scrollAmount = if (direction > 0) neighborHeight else -neighborHeight
-                draggingOffsetY += scrollAmount
-                scope.launch { listState.scrollBy(scrollAmount) }
-                keepDraggedEntryVisibleAfterLayout(entry, accumulateBottomGap = false)
+                if (direction < 0) {
+                    pinDraggedEntryToTopAfterLayout(entry)
+                } else {
+                    draggingOffsetY -= neighborHeight
+                    draggingOffsetY += neighborHeight
+                    scope.launch { listState.scrollBy(neighborHeight) }
+                    keepDraggedEntryVisibleAfterLayout(entry, accumulateBottomGap = false)
+                }
                 val updatedGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
                 val updatedIndex = updatedGroup.indexOf(entry)
                 autoReorderDirection = if (updatedGroup.getOrNull(updatedIndex + direction) != null) {
