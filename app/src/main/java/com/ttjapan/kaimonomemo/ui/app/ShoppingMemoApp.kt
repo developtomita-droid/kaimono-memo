@@ -487,6 +487,7 @@ private fun MemoDetailScreen(
     var voiceTarget by remember { mutableStateOf(if (memo.title.isBlank()) VoiceTarget.Title else VoiceTarget.Item) }
     var focusedItemRequestId by remember { mutableStateOf<String?>(null) }
     var addButtonScrollRequest by remember { mutableStateOf(0) }
+    var itemDragActive by remember { mutableStateOf(false) }
 
     fun editableEntry(): ShoppingEntry {
         return requestBlankEntry(memo)
@@ -544,8 +545,8 @@ private fun MemoDetailScreen(
     Box(
         Modifier
             .fillMaxSize()
-            .pointerInput(pagerState.currentPage) {
-                if (pagerState.currentPage != 0) return@pointerInput
+            .pointerInput(pagerState.currentPage, itemDragActive) {
+                if (pagerState.currentPage != 0 || itemDragActive) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                     var totalX = 0f
@@ -559,6 +560,10 @@ private fun MemoDetailScreen(
                         totalX += delta.x
                         totalY += delta.y
                         if (totalX < -DetailBackSwipeThresholdPx && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
+                            change.consume()
+                            scope.launch { pagerState.animateScrollToPage(1) }
+                            break
+                        } else if (totalX > DetailBackSwipeThresholdPx && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
                             change.consume()
                             onFinish()
                             break
@@ -623,7 +628,7 @@ private fun MemoDetailScreen(
                     val selected = pagerState.currentPage == index
                     Column(
                         modifier = Modifier
-                            .weight(1f)
+                            .weight(if (index == 0) 2f else 1f)
                             .fillMaxHeight()
                             .clickable { scope.launch { pagerState.animateScrollToPage(index) } },
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -664,6 +669,7 @@ private fun MemoDetailScreen(
                             if (selectedEntryId == id) selectedEntryId = null
                         },
                         bottomPadding = listBottomPadding,
+                        onItemDragActiveChange = { itemDragActive = it },
                         onChanged = onChanged
                     )
                 } else {
@@ -725,6 +731,7 @@ private fun ActiveItemsPage(
     onEntryFocused: () -> Unit,
     onEntryFocusCleared: (String) -> Unit,
     bottomPadding: Dp,
+    onItemDragActiveChange: (Boolean) -> Unit,
     onChanged: () -> Unit
 ) {
     val density = LocalDensity.current
@@ -779,6 +786,7 @@ private fun ActiveItemsPage(
             draggingOffsetY = 0f
             deleteSwipeEntryId = null
             deleteSwipeOffsetX = 0f
+            onItemDragActiveChange(false)
         }
         previousBottomPadding = bottomPadding
     }
@@ -795,18 +803,19 @@ private fun ActiveItemsPage(
     }
 
     fun moveEntry(entry: ShoppingEntry, direction: Int): Boolean {
-        if (entry.name.isBlank() || entry.checked) return false
-        val filled = memo.entries.filter { it.name.isNotBlank() && !it.checked }.toMutableList()
-        val from = filled.indexOf(entry)
+        if (entry.name.isBlank()) return false
+        val active = memo.entries.filter { it.name.isNotBlank() && !it.checked }.toMutableList()
+        val done = memo.entries.filter { it.checked && it.name.isNotBlank() }.toMutableList()
+        val targetGroup = if (entry.checked) done else active
+        val from = targetGroup.indexOf(entry)
         if (from < 0) return false
-        val to = (from + direction).coerceIn(0, filled.lastIndex)
+        val to = (from + direction).coerceIn(0, targetGroup.lastIndex)
         if (from == to) return false
-        filled.removeAt(from)
-        filled.add(to, entry)
+        targetGroup.removeAt(from)
+        targetGroup.add(to, entry)
         val blank = memo.entries.firstOrNull { it.name.isBlank() }
-        val done = memo.entries.filter { it.checked && it.name.isNotBlank() }
         memo.entries.clear()
-        memo.entries.addAll(filled)
+        memo.entries.addAll(active)
         if (blank != null) memo.entries.add(blank)
         memo.entries.addAll(done)
         ensureDisplayBlankEntry(memo)
@@ -823,7 +832,7 @@ private fun ActiveItemsPage(
     }
 
     fun startReorder(entry: ShoppingEntry) {
-        if (entry.name.isBlank() || entry.checked) return
+        if (entry.name.isBlank()) return
         draggingEntryId = entry.id
         draggingOffsetY = 0f
         scrollAnchor = ScrollAnchor.Item
@@ -835,12 +844,12 @@ private fun ActiveItemsPage(
         draggingOffsetY += deltaY
 
         while (true) {
-            val active = memo.entries.filter { it.name.isNotBlank() && !it.checked }
-            val index = active.indexOf(entry)
+            val reorderGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
+            val index = reorderGroup.indexOf(entry)
             if (index < 0) return
 
             if (draggingOffsetY > 0f) {
-                val next = active.getOrNull(index + 1)
+                val next = reorderGroup.getOrNull(index + 1)
                 if (next == null) {
                     draggingOffsetY = 0f
                     break
@@ -849,16 +858,18 @@ private fun ActiveItemsPage(
                 if (draggingOffsetY <= nextHeight / 2f) break
                 if (moveEntry(entry, 1)) {
                     draggingOffsetY -= nextHeight
-                    val newIndex = memo.entries.filter { it.name.isNotBlank() && !it.checked }.indexOf(entry)
-                    if (newIndex >= 0 && newIndex <= listState.firstVisibleItemIndex) {
-                        scope.launch { listState.scrollToItem(newIndex) }
+                    if (!entry.checked) {
+                        val newIndex = memo.entries.filter { it.name.isNotBlank() && !it.checked }.indexOf(entry)
+                        if (newIndex >= 0 && newIndex <= listState.firstVisibleItemIndex) {
+                            scope.launch { listState.scrollToItem(newIndex) }
+                        }
                     }
                 } else {
                     draggingOffsetY = 0f
                     break
                 }
             } else if (draggingOffsetY < 0f) {
-                val previous = active.getOrNull(index - 1)
+                val previous = reorderGroup.getOrNull(index - 1)
                 if (previous == null) {
                     draggingOffsetY = 0f
                     break
@@ -867,9 +878,11 @@ private fun ActiveItemsPage(
                 if (-draggingOffsetY <= previousHeight / 2f) break
                 if (moveEntry(entry, -1)) {
                     draggingOffsetY += previousHeight
-                    val newIndex = memo.entries.filter { it.name.isNotBlank() && !it.checked }.indexOf(entry)
-                    if (newIndex >= 0 && newIndex <= listState.firstVisibleItemIndex) {
-                        scope.launch { listState.scrollToItem(newIndex) }
+                    if (!entry.checked) {
+                        val newIndex = memo.entries.filter { it.name.isNotBlank() && !it.checked }.indexOf(entry)
+                        if (newIndex >= 0 && newIndex <= listState.firstVisibleItemIndex) {
+                            scope.launch { listState.scrollToItem(newIndex) }
+                        }
                     }
                 } else {
                     draggingOffsetY = 0f
@@ -880,11 +893,11 @@ private fun ActiveItemsPage(
             }
         }
 
-        val active = memo.entries.filter { it.name.isNotBlank() && !it.checked }
-        val index = active.indexOf(entry)
+        val reorderGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
+        val index = reorderGroup.indexOf(entry)
         if (index == 0 && draggingOffsetY < 0f) {
             draggingOffsetY = 0f
-        } else if (index == active.lastIndex && draggingOffsetY > 0f) {
+        } else if (index == reorderGroup.lastIndex && draggingOffsetY > 0f) {
             draggingOffsetY = 0f
         }
     }
@@ -895,11 +908,11 @@ private fun ActiveItemsPage(
     }
 
     fun startDeleteSwipe(entry: ShoppingEntry) {
-        if (entry.name.isBlank() || entry.checked) return
+        if (entry.name.isBlank()) return
+        startReorder(entry)
         deleteSwipeEntryId = entry.id
         deleteSwipeOffsetX = 0f
-        draggingEntryId = null
-        draggingOffsetY = 0f
+        onItemDragActiveChange(true)
         onSelect(null)
     }
 
@@ -917,6 +930,8 @@ private fun ActiveItemsPage(
         }
         deleteSwipeEntryId = null
         deleteSwipeOffsetX = 0f
+        endReorder()
+        onItemDragActiveChange(false)
     }
 
     fun markDone(entry: ShoppingEntry) {
@@ -991,7 +1006,10 @@ private fun ActiveItemsPage(
                 onReorderDrag = { deltaY -> dragReorder(entry, deltaY) },
                 onReorderEnd = { endReorder() },
                 onDeleteSwipeStart = { startDeleteSwipe(entry) },
-                onDeleteSwipeDrag = { deltaX -> dragDeleteSwipe(entry, deltaX) },
+                onDeleteSwipeDrag = { deltaX, deltaY ->
+                    dragDeleteSwipe(entry, deltaX)
+                    dragReorder(entry, deltaY)
+                },
                 onDeleteSwipeEnd = { endDeleteSwipe(entry) }
             )
         }
@@ -1025,15 +1043,72 @@ private fun ActiveItemsPage(
             items(doneEntries, key = { "done-${it.id}" }) { entry ->
                 DoneEntryRow(
                     entry = entry,
-                    modifier = Modifier.animateItem(),
+                    isDragging = draggingEntryId == entry.id,
+                    dragOffsetY = if (draggingEntryId == entry.id) draggingOffsetY else 0f,
+                    isDeleteSwiping = deleteSwipeEntryId == entry.id,
+                    deleteSwipeOffsetX = if (deleteSwipeEntryId == entry.id) deleteSwipeOffsetX else 0f,
+                    modifier = if (draggingEntryId == entry.id || deleteSwipeEntryId == entry.id) {
+                        Modifier.zIndex(1f)
+                    } else {
+                        Modifier.animateItem().zIndex(0f)
+                    },
                     onRestore = { restoreDone(entry) },
-                    onDelete = {
-                        memo.entries.remove(entry)
-                        memo.deletedEntries.add(entry.copy(checked = false))
-                        onChanged()
-                    }
+                    onDeleteSwipeStart = { startDeleteSwipe(entry) },
+                    onDeleteSwipeDrag = { deltaX, deltaY ->
+                        dragDeleteSwipe(entry, deltaX)
+                        dragReorder(entry, deltaY)
+                    },
+                    onDeleteSwipeEnd = { endDeleteSwipe(entry) }
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun swipeToTrashModifier(
+    key: Any,
+    enabled: Boolean,
+    onPressStarted: () -> Unit = {},
+    onTap: () -> Unit = {},
+    onSwipeStart: () -> Unit,
+    onSwipeDrag: (Float, Float) -> Unit,
+    onSwipeEnd: () -> Unit
+): Modifier {
+    val focusManager = LocalFocusManager.current
+    return Modifier.pointerInput(key, enabled) {
+        if (!enabled) return@pointerInput
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            down.consume()
+            focusManager.clearFocus(force = true)
+            onPressStarted()
+            val releasedBeforeLongPress = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull false
+                    change.consume()
+                    if (!change.pressed) return@withTimeoutOrNull true
+                }
+            }
+            if (releasedBeforeLongPress == true) {
+                onTap()
+                return@awaitEachGesture
+            }
+
+            onSwipeStart()
+            var activePointerId = down.id
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == activePointerId } ?: break
+                if (!change.pressed) break
+                val delta = change.positionChange()
+                if (delta.x != 0f || delta.y != 0f) {
+                    change.consume()
+                    onSwipeDrag(delta.x, delta.y)
+                }
+            }
+            onSwipeEnd()
         }
     }
 }
@@ -1062,69 +1137,20 @@ private fun ShoppingEntryRow(
     onReorderDrag: (Float) -> Unit,
     onReorderEnd: () -> Unit,
     onDeleteSwipeStart: () -> Unit,
-    onDeleteSwipeDrag: (Float) -> Unit,
+    onDeleteSwipeDrag: (Float, Float) -> Unit,
     onDeleteSwipeEnd: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
-    val focusManager = LocalFocusManager.current
     val canDrag = entry.name.isNotBlank()
-    val handleModifier = Modifier.pointerInput(entry.id, canDrag) {
-        if (!canDrag) return@pointerInput
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false)
-            down.consume()
-            focusManager.clearFocus()
-            onReorderStart()
-            var activePointerId = down.id
-            do {
-                val event = awaitPointerEvent()
-                val change = event.changes.firstOrNull { it.id == activePointerId } ?: break
-                if (change.pressed) {
-                    val delta = change.positionChange().y
-                    if (delta != 0f) {
-                        change.consume()
-                        onReorderDrag(delta)
-                    }
-                }
-            } while (change.pressed)
-            onReorderEnd()
-        }
-    }
-    val rowSwipeModifier = Modifier.pointerInput(entry.id, canDrag) {
-        if (!canDrag) return@pointerInput
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-            down.consume()
-            focusManager.clearFocus(force = true)
-            onPressStarted()
-            val releasedBeforeLongPress = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                    val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull false
-                    change.consume()
-                    if (!change.pressed) return@withTimeoutOrNull true
-                }
-            }
-            if (releasedBeforeLongPress == true) {
-                onEditRequested()
-                return@awaitEachGesture
-            }
-
-            onDeleteSwipeStart()
-            var activePointerId = down.id
-            while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
-                val change = event.changes.firstOrNull { it.id == activePointerId } ?: break
-                if (!change.pressed) break
-                val delta = change.positionChange()
-                if (delta.x != 0f || delta.y != 0f) {
-                    change.consume()
-                    onDeleteSwipeDrag(delta.x)
-                }
-            }
-            onDeleteSwipeEnd()
-        }
-    }
+    val rowSwipeModifier = swipeToTrashModifier(
+        key = entry.id,
+        enabled = canDrag,
+        onPressStarted = onPressStarted,
+        onTap = onEditRequested,
+        onSwipeStart = onDeleteSwipeStart,
+        onSwipeDrag = onDeleteSwipeDrag,
+        onSwipeEnd = onDeleteSwipeEnd
+    )
 
     LaunchedEffect(shouldRequestFocus) {
         if (shouldRequestFocus) {
@@ -1147,7 +1173,7 @@ private fun ShoppingEntryRow(
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            NumberHandle(displayNumber = displayNumber, modifier = handleModifier)
+            NumberHandle(displayNumber = displayNumber)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -1226,13 +1252,34 @@ private fun NumberHandle(displayNumber: Int?, modifier: Modifier = Modifier) {
 @Composable
 private fun DoneEntryRow(
     entry: ShoppingEntry,
+    isDragging: Boolean,
+    dragOffsetY: Float,
+    isDeleteSwiping: Boolean,
+    deleteSwipeOffsetX: Float,
     modifier: Modifier = Modifier,
     onRestore: () -> Unit,
-    onDelete: () -> Unit
+    onDeleteSwipeStart: () -> Unit,
+    onDeleteSwipeDrag: (Float, Float) -> Unit,
+    onDeleteSwipeEnd: () -> Unit
 ) {
+    val swipeModifier = swipeToTrashModifier(
+        key = "done-${entry.id}",
+        enabled = entry.name.isNotBlank(),
+        onSwipeStart = onDeleteSwipeStart,
+        onSwipeDrag = onDeleteSwipeDrag,
+        onSwipeEnd = onDeleteSwipeEnd
+    )
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .graphicsLayer {
+                translationX = deleteSwipeOffsetX
+                translationY = dragOffsetY
+                scaleX = if (isDragging || isDeleteSwiping) 1.02f else 1f
+                scaleY = if (isDragging || isDeleteSwiping) 1.02f else 1f
+                shadowElevation = if (isDragging || isDeleteSwiping) 16f else 0f
+            }
+            .background(Color.White)
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1250,11 +1297,18 @@ private fun DoneEntryRow(
             textDecoration = TextDecoration.LineThrough,
             modifier = Modifier
                 .weight(1f)
+                .then(swipeModifier)
                 .padding(vertical = 12.dp)
         )
         RestoreIconButton(onClick = onRestore)
-        IconButton(onClick = onDelete) {
-            Text("🗑", fontSize = 24.sp)
+        if (isDeleteSwiping) {
+            Text(
+                text = "→ 🗑",
+                color = Color(0xFFD32F2F),
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
         }
     }
     Divider(color = Color(0xFFE0E0E0))
@@ -1262,15 +1316,8 @@ private fun DoneEntryRow(
 
 @Composable
 private fun RestoreIconButton(onClick: () -> Unit) {
-    IconButton(onClick = onClick, modifier = Modifier.size(48.dp)) {
-        Box(
-            modifier = Modifier
-                .size(34.dp)
-                .background(Color(0xFFE3F2FD), RoundedCornerShape(8.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            Text("↩", color = Color(0xFF1976D2), fontSize = 30.sp, fontWeight = FontWeight.Bold)
-        }
+    TextButton(onClick = onClick) {
+        Text("戻す", color = Color(0xFF1976D2), fontSize = 16.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -1327,15 +1374,20 @@ private fun MicFab(
         }
         FloatingActionButton(
             onClick = onClick,
-            containerColor = if (hasPartial) Color(0xFF16A34A) else if (controller.isRunning) Color(0xFFD32F2F) else Color(0xFF1976D2),
-            modifier = Modifier.size(78.dp)
+            containerColor = if (hasPartial) Color(0xFF16A34A) else if (controller.isRunning) Color(0xFFE11D48) else Color(0xFF1E88E5),
+            modifier = Modifier.size(90.dp)
         ) {
-            Text(
-                text = if (hasPartial) "登録" else if (controller.isRunning) "■" else "🎙",
-                color = Color.White,
-                fontSize = if (hasPartial) 18.sp else 34.sp,
-                fontWeight = FontWeight.Bold
-            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Text(
+                    text = if (hasPartial) "登録" else if (controller.isRunning) "■" else "🎤",
+                    color = Color.White,
+                    fontSize = if (hasPartial) 20.sp else 42.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                if (!hasPartial && !controller.isRunning) {
+                    Text("マイク", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
         }
     }
 }
