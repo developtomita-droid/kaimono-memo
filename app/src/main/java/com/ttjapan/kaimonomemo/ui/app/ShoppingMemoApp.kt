@@ -51,6 +51,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -550,6 +551,12 @@ private fun MemoDetailScreen(
         if (memo.title.isBlank()) titleFocusRequester.requestFocus()
     }
 
+    LaunchedEffect(pagerState.currentPage) {
+        if (pagerState.currentPage == 1) {
+            speechController.stop()
+        }
+    }
+
     Box(
         Modifier
             .fillMaxSize()
@@ -632,7 +639,7 @@ private fun MemoDetailScreen(
                             onChanged()
                         }
                     ) {
-                        Text("完全消去", color = Color(0xFFD32F2F))
+                        Text("全消去", color = Color(0xFFD32F2F))
                     }
                 }
             }
@@ -726,26 +733,28 @@ private fun MemoDetailScreen(
             }
         }
 
-        MicFab(
-            controller = speechController,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 22.dp, bottom = fabBottomPadding),
-            onClick = {
-                        if (speechController.partialText.isNotBlank()) {
-                            speechController.commitPartial()
-                            return@MicFab
-                        }
-                        if (speechController.isRunning) {
-                            speechController.stop()
-                        } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                            keyboardController?.hide()
-                            speechController.start()
-                        } else {
-                            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        if (pagerState.currentPage == 0) {
+            MicFab(
+                controller = speechController,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 22.dp, bottom = fabBottomPadding),
+                onClick = {
+                            if (speechController.partialText.isNotBlank()) {
+                                speechController.commitPartial()
+                                return@MicFab
+                            }
+                            if (speechController.isRunning) {
+                                speechController.stop()
+                            } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                keyboardController?.hide()
+                                speechController.start()
+                            } else {
+                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
                 }
-            }
-        )
+            )
+        }
     }
 }
 
@@ -1878,21 +1887,23 @@ private fun MicFab(
             containerColor = if (hasPartial) Color(0xFF16A34A) else if (controller.isRunning) Color(0xFFE11D48) else Color(0xFF1E88E5),
             modifier = Modifier.size(90.dp)
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Text(
-                    text = if (hasPartial) "登録" else if (controller.isRunning) "■" else "🎤",
-                    color = Color.White,
-                    fontSize = if (hasPartial) 20.sp else 42.sp,
-                    fontWeight = FontWeight.Bold
+            Icon(
+                painter = painterResource(
+                    id = when {
+                        hasPartial -> R.drawable.ic_fab_check
+                        controller.isRunning -> R.drawable.ic_fab_stop
+                        else -> R.drawable.ic_fab_mic
+                    }
+                ),
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(
+                    if (hasPartial || controller.isRunning) 44.dp else 50.dp
                 )
-                if (!hasPartial && !controller.isRunning) {
-                    Text("マイク", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            }
+            )
         }
     }
 }
-
 @Composable
 private fun FavoritesScreen(
     memos: List<ShoppingMemo>,
