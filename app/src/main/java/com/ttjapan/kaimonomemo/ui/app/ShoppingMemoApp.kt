@@ -760,6 +760,7 @@ private fun ActiveItemsPage(
     var draggingEntryId by remember { mutableStateOf<String?>(null) }
     var draggingOffsetY by remember { mutableStateOf(0f) }
     var bottomClampGapY by remember { mutableStateOf(0f) }
+    var topClampGapY by remember { mutableStateOf(0f) }
     var dragDirectionY by remember { mutableStateOf(0) }
     var autoReorderDirection by remember { mutableStateOf(0) }
     var deleteSwipeEntryId by remember { mutableStateOf<String?>(null) }
@@ -802,6 +803,7 @@ private fun ActiveItemsPage(
             draggingEntryId = null
             draggingOffsetY = 0f
             bottomClampGapY = 0f
+            topClampGapY = 0f
             dragDirectionY = 0
             autoReorderDirection = 0
             deleteSwipeEntryId = null
@@ -868,6 +870,7 @@ private fun ActiveItemsPage(
             ?: return
         val viewportStart = listState.layoutInfo.viewportStartOffset
         val autoScrollEnd = listState.layoutInfo.viewportEndOffset - bottomPaddingPx
+        val dragDisplayStart = viewportStart + dragEdgePaddingPx
         val dragDisplayEnd = listState.layoutInfo.viewportEndOffset - dragEdgePaddingPx
         var visualTop = itemInfo.offset + draggingOffsetY
         var visualBottom = visualTop + itemInfo.size
@@ -885,6 +888,7 @@ private fun ActiveItemsPage(
         val lowerLimitOverflow = visualBottom - dragDisplayEnd
         if (lowerLimitOverflow > 0f) {
             draggingOffsetY -= lowerLimitOverflow
+            topClampGapY = 0f
             if (accumulateBottomGap) {
                 bottomClampGapY += lowerLimitOverflow
             }
@@ -892,9 +896,19 @@ private fun ActiveItemsPage(
             visualBottom -= lowerLimitOverflow
         }
         val upperLimitOverflow = viewportStart - visualTop
-        if (upperLimitOverflow > 0f && dragDirectionY <= 0) {
+        val upperDisplayOverflow = dragDisplayStart - visualTop
+        if (upperDisplayOverflow > 0f) {
+            draggingOffsetY += upperDisplayOverflow
+            bottomClampGapY = 0f
+            if (accumulateBottomGap) {
+                topClampGapY += upperDisplayOverflow
+            }
+            visualTop += upperDisplayOverflow
+            visualBottom += upperDisplayOverflow
+        } else if (upperLimitOverflow > 0f && dragDirectionY <= 0) {
             draggingOffsetY += upperLimitOverflow
             bottomClampGapY = 0f
+            topClampGapY = 0f
             visualTop += upperLimitOverflow
             visualBottom += upperLimitOverflow
         }
@@ -925,6 +939,7 @@ private fun ActiveItemsPage(
         draggingEntryId = entry.id
         draggingOffsetY = 0f
         bottomClampGapY = 0f
+        topClampGapY = 0f
         dragDirectionY = 0
         autoReorderDirection = 0
         scrollAnchor = ScrollAnchor.Item
@@ -946,6 +961,15 @@ private fun ActiveItemsPage(
                 val releasedGap = minOf(bottomClampGapY, -deltaY)
                 bottomClampGapY -= releasedGap
                 deltaY + releasedGap
+            }
+        } else if (topClampGapY > 0f) {
+            if (deltaY <= 0f) {
+                topClampGapY += -deltaY
+                0f
+            } else {
+                val releasedGap = minOf(topClampGapY, deltaY)
+                topClampGapY -= releasedGap
+                deltaY - releasedGap
             }
         } else {
             deltaY
@@ -1023,6 +1047,7 @@ private fun ActiveItemsPage(
         draggingEntryId = null
         draggingOffsetY = 0f
         bottomClampGapY = 0f
+        topClampGapY = 0f
         dragDirectionY = 0
         autoReorderDirection = 0
     }
