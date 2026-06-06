@@ -935,6 +935,35 @@ private fun ActiveItemsPage(
         }
     }
 
+    fun draggedVisualTop(entry: ShoppingEntry): Float? {
+        val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
+        val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
+            ?: return null
+        return itemInfo.offset + draggingOffsetY
+    }
+
+    fun keepDraggedEntryAtVisualTopAfterLayout(
+        entry: ShoppingEntry,
+        visualTop: Float,
+        firstVisibleIndex: Int? = null,
+        firstVisibleScrollOffset: Int = 0
+    ) {
+        scope.launch {
+            withFrameNanos { }
+            if (draggingEntryId != entry.id) return@launch
+            if (firstVisibleIndex != null) {
+                listState.scrollToItem(firstVisibleIndex, firstVisibleScrollOffset)
+                withFrameNanos { }
+                if (draggingEntryId != entry.id) return@launch
+            }
+            val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
+            val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
+                ?: return@launch
+            draggingOffsetY = visualTop - itemInfo.offset
+            gentlyKeepDraggedEntryVisible(entry)
+        }
+    }
+
     fun isDraggedNearTopEdge(entry: ShoppingEntry): Boolean {
         val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
         val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
@@ -978,6 +1007,8 @@ private fun ActiveItemsPage(
 
     fun dragReorder(entry: ShoppingEntry, deltaY: Float) {
         if (draggingEntryId != entry.id) return
+        val firstVisibleIndexAtDragStart = listState.firstVisibleItemIndex
+        val firstVisibleOffsetAtDragStart = listState.firstVisibleItemScrollOffset
         if (deltaY > 0f) {
             dragDirectionY = 1
         } else if (deltaY < 0f) {
@@ -1005,7 +1036,9 @@ private fun ActiveItemsPage(
             deltaY
         }
         draggingOffsetY += effectiveDeltaY
+        val targetVisualTop = draggedVisualTop(entry)
         var movedDuringDrag = false
+        var restoreFirstVisibleAfterMove = false
 
         while (true) {
             val reorderGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
@@ -1020,8 +1053,12 @@ private fun ActiveItemsPage(
                 }
                 val nextHeight = visibleItemHeightPx(next)
                 if (draggingOffsetY <= nextHeight / 2f) break
+                val entryListIndexBeforeMove = listIndexForEntry(entry)
                 if (moveEntry(entry, 1)) {
                     movedDuringDrag = true
+                    if (entryListIndexBeforeMove == firstVisibleIndexAtDragStart) {
+                        restoreFirstVisibleAfterMove = true
+                    }
                     draggingOffsetY -= nextHeight
                     if (!entry.checked) {
                         val newIndex = memo.entries.filter { it.name.isNotBlank() && !it.checked }.indexOf(entry)
@@ -1069,6 +1106,15 @@ private fun ActiveItemsPage(
         if (movedDuringDrag) {
             if (dragDirectionY < 0 && isDraggedNearTopEdge(entry)) {
                 pinDraggedEntryToTopAfterLayout(entry)
+            } else if (restoreFirstVisibleAfterMove && targetVisualTop != null) {
+                keepDraggedEntryAtVisualTopAfterLayout(
+                    entry = entry,
+                    visualTop = targetVisualTop,
+                    firstVisibleIndex = firstVisibleIndexAtDragStart,
+                    firstVisibleScrollOffset = firstVisibleOffsetAtDragStart
+                )
+            } else if (targetVisualTop != null) {
+                keepDraggedEntryAtVisualTopAfterLayout(entry, targetVisualTop)
             } else {
                 keepDraggedEntryVisibleAfterLayout(entry)
             }
