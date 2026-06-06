@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -824,11 +825,41 @@ private fun ActiveItemsPage(
     }
 
     fun visibleItemHeightPx(entry: ShoppingEntry): Float {
+        val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
         return listState.layoutInfo.visibleItemsInfo
-            .firstOrNull { it.key == entry.id }
+            .firstOrNull { it.key == itemKey }
             ?.size
             ?.toFloat()
             ?: fallbackRowHeightPx
+    }
+
+    fun listIndexForEntry(entry: ShoppingEntry): Int {
+        return if (entry.checked) {
+            val doneIndex = memo.entries.filter { it.checked && it.name.isNotBlank() }.indexOf(entry)
+            val uncheckedCount = memo.entries.count { !it.checked }
+            if (doneIndex < 0) -1 else uncheckedCount + 2 + doneIndex
+        } else {
+            memo.entries.filter { !it.checked }.indexOf(entry)
+        }
+    }
+
+    fun gentlyKeepDraggedEntryVisible(entry: ShoppingEntry) {
+        val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
+        val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
+            ?: return
+        val viewportStart = listState.layoutInfo.viewportStartOffset
+        val viewportEnd = listState.layoutInfo.viewportEndOffset - bottomPaddingPx
+        val overflowBottom = itemInfo.offset + itemInfo.size - viewportEnd
+        val overflowTop = viewportStart - itemInfo.offset
+        val scrollAmount = when {
+            overflowBottom > 0 -> overflowBottom.coerceAtMost(itemInfo.size / 2)
+            overflowTop > 0 -> -overflowTop.coerceAtMost(itemInfo.size / 2)
+            else -> 0
+        }.toFloat()
+        if (scrollAmount != 0f) {
+            draggingOffsetY += scrollAmount
+            scope.launch { listState.scrollBy(scrollAmount) }
+        }
     }
 
     fun startReorder(entry: ShoppingEntry) {
@@ -863,6 +894,8 @@ private fun ActiveItemsPage(
                         if (newIndex >= 0 && newIndex <= listState.firstVisibleItemIndex) {
                             scope.launch { listState.scrollToItem(newIndex) }
                         }
+                    } else {
+                        gentlyKeepDraggedEntryVisible(entry)
                     }
                 } else {
                     draggingOffsetY = 0f
@@ -883,6 +916,8 @@ private fun ActiveItemsPage(
                         if (newIndex >= 0 && newIndex <= listState.firstVisibleItemIndex) {
                             scope.launch { listState.scrollToItem(newIndex) }
                         }
+                    } else {
+                        gentlyKeepDraggedEntryVisible(entry)
                     }
                 } else {
                     draggingOffsetY = 0f
