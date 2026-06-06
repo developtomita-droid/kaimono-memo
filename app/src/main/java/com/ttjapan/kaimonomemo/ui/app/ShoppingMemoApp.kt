@@ -103,6 +103,7 @@ import com.ttjapan.kaimonomemo.data.saveMemos
 import com.ttjapan.kaimonomemo.model.ShoppingEntry
 import com.ttjapan.kaimonomemo.model.ShoppingMemo
 import com.ttjapan.kaimonomemo.voice.ContinuousSpeechController
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -746,6 +747,7 @@ private fun ActiveItemsPage(
     var scrollAnchor by remember { mutableStateOf(ScrollAnchor.Item) }
     var draggingEntryId by remember { mutableStateOf<String?>(null) }
     var draggingOffsetY by remember { mutableStateOf(0f) }
+    var autoReorderDirection by remember { mutableStateOf(0) }
     var deleteSwipeEntryId by remember { mutableStateOf<String?>(null) }
     var deleteSwipeOffsetX by remember { mutableStateOf(0f) }
     var previousBottomPadding by remember { mutableStateOf(bottomPadding) }
@@ -785,6 +787,7 @@ private fun ActiveItemsPage(
         if (bottomPadding < previousBottomPadding) {
             draggingEntryId = null
             draggingOffsetY = 0f
+            autoReorderDirection = 0
             deleteSwipeEntryId = null
             deleteSwipeOffsetX = 0f
             onItemDragActiveChange(false)
@@ -849,11 +852,19 @@ private fun ActiveItemsPage(
             ?: return
         val viewportStart = listState.layoutInfo.viewportStartOffset
         val viewportEnd = listState.layoutInfo.viewportEndOffset - bottomPaddingPx
-        val overflowBottom = itemInfo.offset + itemInfo.size - viewportEnd
-        val overflowTop = viewportStart - itemInfo.offset
+        val visualTop = itemInfo.offset + draggingOffsetY
+        val visualBottom = visualTop + itemInfo.size
+        val edgeBand = itemInfo.size * 0.35f
+        autoReorderDirection = when {
+            visualBottom >= viewportEnd - edgeBand -> 1
+            visualTop <= viewportStart + edgeBand -> -1
+            else -> 0
+        }
+        val overflowBottom = visualBottom - viewportEnd
+        val overflowTop = viewportStart - visualTop
         val scrollAmount = when {
-            overflowBottom > 0 -> overflowBottom.coerceAtMost(itemInfo.size / 2)
-            overflowTop > 0 -> -overflowTop.coerceAtMost(itemInfo.size / 2)
+            overflowBottom > 0 -> overflowBottom.coerceAtMost(itemInfo.size / 2f)
+            overflowTop > 0 -> -overflowTop.coerceAtMost(itemInfo.size / 2f)
             else -> 0
         }.toFloat()
         if (scrollAmount != 0f) {
@@ -866,6 +877,7 @@ private fun ActiveItemsPage(
         if (entry.name.isBlank()) return
         draggingEntryId = entry.id
         draggingOffsetY = 0f
+        autoReorderDirection = 0
         scrollAnchor = ScrollAnchor.Item
         onSelect(null)
     }
@@ -935,11 +947,45 @@ private fun ActiveItemsPage(
         } else if (index == reorderGroup.lastIndex && draggingOffsetY > 0f) {
             draggingOffsetY = 0f
         }
+        gentlyKeepDraggedEntryVisible(entry)
     }
 
     fun endReorder() {
         draggingEntryId = null
         draggingOffsetY = 0f
+        autoReorderDirection = 0
+    }
+
+    LaunchedEffect(draggingEntryId, autoReorderDirection) {
+        while (draggingEntryId != null && autoReorderDirection != 0) {
+            delay(300)
+            val entry = memo.entries.firstOrNull { it.id == draggingEntryId } ?: break
+            val group = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
+            val index = group.indexOf(entry)
+            val direction = autoReorderDirection
+            val neighbor = group.getOrNull(index + direction)
+            if (index < 0 || neighbor == null) {
+                autoReorderDirection = 0
+                break
+            }
+            val neighborHeight = visibleItemHeightPx(neighbor)
+            if (moveEntry(entry, direction)) {
+                draggingOffsetY += if (direction > 0) -neighborHeight else neighborHeight
+                val scrollAmount = if (direction > 0) neighborHeight else -neighborHeight
+                draggingOffsetY += scrollAmount
+                scope.launch { listState.scrollBy(scrollAmount) }
+                val updatedGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
+                val updatedIndex = updatedGroup.indexOf(entry)
+                autoReorderDirection = if (updatedGroup.getOrNull(updatedIndex + direction) != null) {
+                    direction
+                } else {
+                    0
+                }
+            } else {
+                autoReorderDirection = 0
+                break
+            }
+        }
     }
 
     fun startDeleteSwipe(entry: ShoppingEntry) {
@@ -1118,32 +1164,41 @@ private fun swipeToTrashModifier(
             down.consume()
             focusManager.clearFocus(force = true)
             onPressStarted()
-            val releasedBeforeLongPress = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+            val preLongPressResult = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                var totalMove = Offset.Zero
                 while (true) {
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull false
-                    change.consume()
+                    totalMove += change.positionChange()
+                    if (totalMove.getDistance() > viewConfiguration.touchSlop) {
+                        return@withTimeoutOrNull false
+                    }
                     if (!change.pressed) return@withTimeoutOrNull true
                 }
             }
-            if (releasedBeforeLongPress == true) {
+            if (preLongPressResult == true) {
                 onTap()
+                return@awaitEachGesture
+            } else if (preLongPressResult == false) {
                 return@awaitEachGesture
             }
 
             onSwipeStart()
-            var activePointerId = down.id
-            while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
-                val change = event.changes.firstOrNull { it.id == activePointerId } ?: break
-                if (!change.pressed) break
-                val delta = change.positionChange()
-                if (delta.x != 0f || delta.y != 0f) {
-                    change.consume()
-                    onSwipeDrag(delta.x, delta.y)
+            try {
+                var activePointerId = down.id
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == activePointerId } ?: break
+                    if (!change.pressed) break
+                    val delta = change.positionChange()
+                    if (delta.x != 0f || delta.y != 0f) {
+                        change.consume()
+                        onSwipeDrag(delta.x, delta.y)
+                    }
                 }
+            } finally {
+                onSwipeEnd()
             }
-            onSwipeEnd()
         }
     }
 }
