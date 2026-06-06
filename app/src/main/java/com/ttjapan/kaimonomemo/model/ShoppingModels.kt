@@ -9,16 +9,19 @@ import java.util.UUID
 class ShoppingEntry(
     val id: String = UUID.randomUUID().toString(),
     name: String,
-    checked: Boolean = false
+    checked: Boolean = false,
+    colorMark: Int = 0
 ) {
     var name by mutableStateOf(name)
     var checked by mutableStateOf(checked)
+    var colorMark by mutableStateOf(colorMark)
 
     fun copy(
         id: String = this.id,
         name: String = this.name,
-        checked: Boolean = this.checked
-    ) = ShoppingEntry(id = id, name = name, checked = checked)
+        checked: Boolean = this.checked,
+        colorMark: Int = this.colorMark
+    ) = ShoppingEntry(id = id, name = name, checked = checked, colorMark = colorMark)
 }
 
 class ShoppingMemo(

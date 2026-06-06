@@ -5,6 +5,11 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -113,6 +118,7 @@ import com.ttjapan.kaimonomemo.voice.ContinuousSpeechController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Locale
 
 private enum class Screen {
     Home,
@@ -486,12 +492,17 @@ private fun AddMemoCard(compact: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun OneHandModeBackdrop(modifier: Modifier = Modifier) {
+    val backdropResId = if (Locale.getDefault().language == Locale.JAPANESE.language) {
+        R.drawable.one_hand_food_pattern_a
+    } else {
+        R.drawable.one_hand_food_pattern_global
+    }
     Box(
         modifier = modifier
             .background(Color(0xFFFAFCFF))
     ) {
         Image(
-            painter = painterResource(R.drawable.one_hand_food_pattern_a),
+            painter = painterResource(backdropResId),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
@@ -739,8 +750,9 @@ private fun MemoDetailScreen(
                                 voiceTarget = VoiceTarget.Title
                             }
                         },
-                    textStyle = TextStyle(fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.Black),
-                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 22.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold, color = Color.Black),
+                    singleLine = false,
+                    maxLines = 2,
                     cursorBrush = SolidColor(Color(0xFF1976D2)),
                     decorationBox = { innerTextField ->
                         Box(
@@ -1391,6 +1403,13 @@ private fun ActiveItemsPage(
         onChanged()
     }
 
+    fun toggleEntryColor(entry: ShoppingEntry) {
+        if (entry.name.isBlank()) return
+        entry.colorMark = (entry.colorMark + 1) % 4
+        onSelect(null)
+        onChanged()
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -1449,6 +1468,7 @@ private fun ActiveItemsPage(
                     selectEntry(entry)
                     onRequestFocus(entry.id)
                 },
+                onNumberClick = { toggleEntryColor(entry) },
                 onFocusConsumed = onFocusedItemConsumed,
                 onFocused = {
                     onSelect(entry.id)
@@ -1687,6 +1707,7 @@ private fun ShoppingEntryRow(
     onSelect: () -> Unit,
     onPressStarted: () -> Unit,
     onEditRequested: () -> Unit,
+    onNumberClick: () -> Unit,
     onFocusConsumed: () -> Unit,
     onFocused: () -> Unit,
     onFocusCleared: () -> Unit,
@@ -1702,6 +1723,7 @@ private fun ShoppingEntryRow(
 ) {
     val focusRequester = remember { FocusRequester() }
     val canDrag = entry.name.isNotBlank()
+    val rowBackground = if (selected) Color(0xFFE3F2FD) else entryColorMarkBackground(entry.colorMark)
     val rowSwipeModifier = swipeToTrashModifier(
         key = entry.id,
         enabled = canDrag,
@@ -1730,11 +1752,11 @@ private fun ShoppingEntryRow(
                 scaleY = if (isDragging || isDeleteSwiping) 1.02f else 1f
                 shadowElevation = if (isDragging || isDeleteSwiping) 16f else 0f
             }
-            .background(if (selected) Color(0xFFE3F2FD) else Color.White)
+            .background(rowBackground)
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            NumberHandle(displayNumber = displayNumber)
+            NumberHandle(displayNumber = displayNumber, onClick = onNumberClick)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -1785,12 +1807,22 @@ private fun ShoppingEntryRow(
     Divider(color = Color(0xFFE0E0E0))
 }
 
+private fun entryColorMarkBackground(colorMark: Int): Color {
+    return when (colorMark) {
+        1 -> Color(0xFFEAF4FF)
+        2 -> Color(0xFFFFEEEE)
+        3 -> Color(0xFFFFF8D8)
+        else -> Color.White
+    }
+}
+
 @Composable
-private fun NumberHandle(displayNumber: Int?, modifier: Modifier = Modifier) {
+private fun NumberHandle(displayNumber: Int?, modifier: Modifier = Modifier, onClick: () -> Unit = {}) {
     Box(
         modifier = modifier
             .padding(start = 6.dp, end = 10.dp)
             .size(32.dp)
+            .then(if (displayNumber == null) Modifier else Modifier.clickable(onClick = onClick))
             .background(
                 color = if (displayNumber == null) Color.Transparent else Color(0xFFE3F2FD),
                 shape = CircleShape
@@ -1896,7 +1928,7 @@ private fun DeletedItemsPage(
         LaunchedEffect(Unit) {
             onListAtTopChanged(true)
         }
-        PlaceholderBody("蜑企勁貂医い繧､繝・Β縺ｯ縺ゅｊ縺ｾ縺帙ｓ")
+        PlaceholderBody("ゴミ箱は空です。")
         return
     }
     val density = LocalDensity.current
@@ -1963,7 +1995,7 @@ private fun DeletedEntryRow(
     onDrag: (Float) -> Unit,
     onDragEnd: () -> Unit
 ) {
-    val swipeModifier = horizontalPressSwipeModifier(
+    val swipeModifier = horizontalLongPressSwipeModifier(
         key = "deleted-${entry.id}",
         onSwipeStart = onDragStart,
         onSwipeDrag = onDrag,
@@ -2055,6 +2087,16 @@ private fun MicFab(
     onClick: () -> Unit
 ) {
     val hasPartial = controller.partialText.isNotBlank()
+    val recordingTransition = rememberInfiniteTransition(label = "recording-stop")
+    val stopScale by recordingTransition.animateFloat(
+        initialValue = 0.72f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 3000),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "recording-stop-scale"
+    )
     Column(modifier = modifier, horizontalAlignment = Alignment.End) {
         if (hasPartial) {
             Text(
@@ -2073,20 +2115,26 @@ private fun MicFab(
             containerColor = if (hasPartial) Color(0xFF16A34A) else if (controller.isRunning) Color(0xFFE11D48) else Color(0xFF1E88E5),
             modifier = Modifier.size(90.dp)
         ) {
-            Icon(
-                painter = painterResource(
-                    id = when {
-                        hasPartial -> R.drawable.ic_fab_check
-                        controller.isRunning -> R.drawable.ic_fab_stop
-                        else -> R.drawable.ic_fab_mic
-                    }
-                ),
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(
-                    if (hasPartial || controller.isRunning) 44.dp else 50.dp
+            if (controller.isRunning && !hasPartial) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .graphicsLayer {
+                            scaleX = stopScale
+                            scaleY = stopScale
+                        }
+                        .background(Color.White, RoundedCornerShape(4.dp))
                 )
-            )
+            } else {
+                Icon(
+                    painter = painterResource(
+                        id = if (hasPartial) R.drawable.ic_fab_check else R.drawable.ic_fab_mic
+                    ),
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(if (hasPartial) 44.dp else 50.dp)
+                )
+            }
         }
     }
 }

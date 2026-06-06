@@ -43,6 +43,7 @@ fun saveMemos(context: Context, memos: List<ShoppingMemo>) {
                         put("id", entry.id)
                         put("name", entry.name)
                         put("checked", entry.checked)
+                        put("colorMark", entry.colorMark)
                     })
                 }
             })
@@ -52,6 +53,7 @@ fun saveMemos(context: Context, memos: List<ShoppingMemo>) {
                         put("id", entry.id)
                         put("name", entry.name)
                         put("checked", entry.checked)
+                        put("colorMark", entry.colorMark)
                     })
                 }
             })
@@ -93,7 +95,8 @@ private fun readEntries(array: JSONArray?): List<ShoppingEntry> {
         ShoppingEntry(
             id = obj.optString("id", UUID.randomUUID().toString()),
             name = obj.optString("name", ""),
-            checked = obj.optBoolean("checked", false)
+            checked = obj.optBoolean("checked", false),
+            colorMark = obj.optInt("colorMark", 0)
         )
     }
 }
