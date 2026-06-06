@@ -548,7 +548,7 @@ private fun MemoDetailScreen(
         Modifier
             .fillMaxSize()
             .pointerInput(pagerState.currentPage, itemDragActive) {
-                if (pagerState.currentPage != 0 || itemDragActive) return@pointerInput
+                if (itemDragActive) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                     var totalX = 0f
@@ -561,14 +561,20 @@ private fun MemoDetailScreen(
                         val delta = change.positionChange()
                         totalX += delta.x
                         totalY += delta.y
-                        if (totalX < -DetailBackSwipeThresholdPx && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
-                            change.consume()
-                            scope.launch { pagerState.animateScrollToPage(1) }
-                            break
-                        } else if (totalX > DetailBackSwipeThresholdPx && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
-                            change.consume()
-                            onFinish()
-                            break
+                        if (kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
+                            if (pagerState.currentPage == 0 && totalX < -DetailBackSwipeThresholdPx) {
+                                change.consume()
+                                scope.launch { pagerState.animateScrollToPage(1) }
+                                break
+                            } else if (pagerState.currentPage == 0 && totalX > DetailBackSwipeThresholdPx) {
+                                change.consume()
+                                onFinish()
+                                break
+                            } else if (pagerState.currentPage == 1 && totalX > DetailBackSwipeThresholdPx) {
+                                change.consume()
+                                scope.launch { pagerState.animateScrollToPage(0) }
+                                break
+                            }
                         }
                     }
                 }
@@ -653,7 +659,11 @@ private fun MemoDetailScreen(
                 }
             }
             Divider(color = Color(0xFFE0E0E0))
-            HorizontalPager(state = pagerState, modifier = Modifier.weight(1f)) { page ->
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.weight(1f),
+                userScrollEnabled = false
+            ) { page ->
                 if (page == 0) {
                     ActiveItemsPage(
                         memo = memo,
@@ -855,7 +865,7 @@ private fun ActiveItemsPage(
             ?: return
         val viewportStart = listState.layoutInfo.viewportStartOffset
         val autoScrollEnd = listState.layoutInfo.viewportEndOffset - bottomPaddingPx
-        val dragDisplayEnd = listState.layoutInfo.viewportEndOffset + (bottomPaddingPx * 0.18f) - dragEdgePaddingPx
+        val dragDisplayEnd = listState.layoutInfo.viewportEndOffset - dragEdgePaddingPx
         var visualTop = itemInfo.offset + draggingOffsetY
         var visualBottom = visualTop + itemInfo.size
         val edgeBand = itemInfo.size * 0.35f
@@ -1006,8 +1016,8 @@ private fun ActiveItemsPage(
             if (moveEntry(entry, direction)) {
                 draggingOffsetY += if (direction > 0) -neighborHeight else neighborHeight
                 val scrollAmount = if (direction > 0) neighborHeight else -neighborHeight
-                val consumedScroll = listState.scrollBy(scrollAmount)
-                draggingOffsetY += consumedScroll
+                draggingOffsetY += scrollAmount
+                scope.launch { listState.scrollBy(scrollAmount) }
                 gentlyKeepDraggedEntryVisible(entry, accumulateBottomGap = false)
                 val updatedGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
                 val updatedIndex = updatedGroup.indexOf(entry)
