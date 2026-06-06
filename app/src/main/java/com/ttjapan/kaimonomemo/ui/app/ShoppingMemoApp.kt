@@ -855,7 +855,7 @@ private fun ActiveItemsPage(
             ?: return
         val viewportStart = listState.layoutInfo.viewportStartOffset
         val autoScrollEnd = listState.layoutInfo.viewportEndOffset - bottomPaddingPx
-        val dragDisplayEnd = listState.layoutInfo.viewportEndOffset - dragEdgePaddingPx
+        val dragDisplayEnd = listState.layoutInfo.viewportEndOffset + (bottomPaddingPx * 0.18f) - dragEdgePaddingPx
         var visualTop = itemInfo.offset + draggingOffsetY
         var visualBottom = visualTop + itemInfo.size
         val edgeBand = itemInfo.size * 0.35f
@@ -1006,8 +1006,8 @@ private fun ActiveItemsPage(
             if (moveEntry(entry, direction)) {
                 draggingOffsetY += if (direction > 0) -neighborHeight else neighborHeight
                 val scrollAmount = if (direction > 0) neighborHeight else -neighborHeight
-                draggingOffsetY += scrollAmount
-                scope.launch { listState.scrollBy(scrollAmount) }
+                val consumedScroll = listState.scrollBy(scrollAmount)
+                draggingOffsetY += consumedScroll
                 gentlyKeepDraggedEntryVisible(entry, accumulateBottomGap = false)
                 val updatedGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
                 val updatedIndex = updatedGroup.indexOf(entry)
