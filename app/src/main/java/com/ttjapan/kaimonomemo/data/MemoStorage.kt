@@ -9,6 +9,7 @@ import java.util.UUID
 
 private const val PREF_NAME = "shopping_memo"
 private const val PREF_MEMOS = "memos"
+private const val PREF_ONE_HAND_MODE = "one_hand_mode_enabled"
 
 fun loadMemos(context: Context): List<ShoppingMemo> {
     val raw = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).getString(PREF_MEMOS, null)
@@ -59,6 +60,18 @@ fun saveMemos(context: Context, memos: List<ShoppingMemo>) {
     context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(PREF_MEMOS, array.toString())
+        .apply()
+}
+
+fun loadOneHandModeEnabled(context: Context): Boolean {
+    return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_ONE_HAND_MODE, true)
+}
+
+fun saveOneHandModeEnabled(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_ONE_HAND_MODE, enabled)
         .apply()
 }
 

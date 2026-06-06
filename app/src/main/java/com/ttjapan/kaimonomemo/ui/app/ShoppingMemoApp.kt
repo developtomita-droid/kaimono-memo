@@ -6,6 +6,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -64,6 +65,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -74,8 +76,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -101,7 +105,9 @@ import androidx.core.content.ContextCompat
 import com.ttjapan.kaimonomemo.R
 import com.ttjapan.kaimonomemo.data.assignDefaultTitleIfBlank
 import com.ttjapan.kaimonomemo.data.loadMemos
+import com.ttjapan.kaimonomemo.data.loadOneHandModeEnabled
 import com.ttjapan.kaimonomemo.data.saveMemos
+import com.ttjapan.kaimonomemo.data.saveOneHandModeEnabled
 import com.ttjapan.kaimonomemo.model.ShoppingEntry
 import com.ttjapan.kaimonomemo.model.ShoppingMemo
 import com.ttjapan.kaimonomemo.voice.ContinuousSpeechController
@@ -136,6 +142,7 @@ private const val ListTopAnchorKey = "list-top-anchor"
 private const val AddListItemKey = "add-list-item"
 private const val DetailBackSwipeThresholdPx = 140f
 private const val DragAutoReorderDelayMillis = 100L
+private const val OneHandMaxOffsetRatio = 0.46f
 private val TrashTabSelectedColor = Color(0xFFE91E63)
 
 private fun pruneBlankEntries(memo: ShoppingMemo) {
@@ -181,9 +188,14 @@ fun ShoppingMemoApp() {
     val memos = remember { mutableStateListOf<ShoppingMemo>().also { it.addAll(loadMemos(context)) } }
     var currentScreen by remember { mutableStateOf(Screen.Home) }
     var selectedMemoId by remember { mutableStateOf<String?>(null) }
+    var oneHandModeEnabled by remember { mutableStateOf(loadOneHandModeEnabled(context)) }
     val selectedMemo = memos.firstOrNull { it.id == selectedMemoId }
 
     fun persist() = saveMemos(context, memos)
+    fun updateOneHandMode(enabled: Boolean) {
+        oneHandModeEnabled = enabled
+        saveOneHandModeEnabled(context, enabled)
+    }
     fun openMemo(memo: ShoppingMemo) {
         selectedMemoId = memo.id
         currentScreen = Screen.Detail
@@ -255,13 +267,18 @@ fun ShoppingMemoApp() {
                     } else {
                         MemoDetailScreen(
                             memo = selectedMemo,
+                            oneHandModeEnabled = oneHandModeEnabled,
                             onFinish = ::finishDetail,
                             onChanged = ::persist
                         )
                     }
                 }
                 Screen.Map -> PlaceholderScreen("地図", "地図機能はありません")
-                Screen.Settings -> SettingsScreen(memoCount = memos.size)
+                Screen.Settings -> SettingsScreen(
+                    memoCount = memos.size,
+                    oneHandModeEnabled = oneHandModeEnabled,
+                    onOneHandModeChanged = ::updateOneHandMode
+                )
                 Screen.Favorites -> FavoritesScreen(
                     memos = memos.filter { it.favorite },
                     onOpenMemo = ::openMemo,
@@ -468,8 +485,63 @@ private fun AddMemoCard(compact: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
+private fun OneHandModeBackdrop(modifier: Modifier = Modifier) {
+    Canvas(
+        modifier = modifier
+            .background(Color(0xFFFAFCFF))
+            .padding(horizontal = 28.dp, vertical = 18.dp)
+    ) {
+        val paperColor = Color(0xFFEAF4F2)
+        val accentColor = Color(0xFFFDECEF)
+        val lineColor = Color(0xFFDCEAE7)
+        val strokeWidth = 3f
+        val cardWidth = size.width * 0.56f
+        val cardHeight = size.height * 0.58f
+        val cardLeft = size.width * 0.2f
+        val cardTop = size.height * 0.18f
+        drawRoundRect(
+            color = accentColor,
+            topLeft = Offset(cardLeft + size.width * 0.06f, cardTop + size.height * 0.08f),
+            size = Size(cardWidth, cardHeight),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(24f, 24f),
+            style = Stroke(width = strokeWidth)
+        )
+        drawRoundRect(
+            color = paperColor,
+            topLeft = Offset(cardLeft, cardTop),
+            size = Size(cardWidth, cardHeight),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(24f, 24f),
+            style = Stroke(width = strokeWidth)
+        )
+        val startX = cardLeft + cardWidth * 0.18f
+        val endX = cardLeft + cardWidth * 0.84f
+        repeat(4) { index ->
+            val y = cardTop + cardHeight * (0.24f + index * 0.16f)
+            drawCircle(
+                color = paperColor,
+                radius = 5f,
+                center = Offset(cardLeft + cardWidth * 0.11f, y)
+            )
+            drawLine(
+                color = lineColor,
+                start = Offset(startX, y),
+                end = Offset(endX, y),
+                strokeWidth = strokeWidth,
+            )
+        }
+        drawLine(
+            color = accentColor,
+            start = Offset(size.width * 0.08f, size.height * 0.82f),
+            end = Offset(size.width * 0.92f, size.height * 0.82f),
+            strokeWidth = 2f
+        )
+    }
+}
+
+@Composable
 private fun MemoDetailScreen(
     memo: ShoppingMemo,
+    oneHandModeEnabled: Boolean,
     onFinish: () -> Unit,
     onChanged: () -> Unit
 ) {
@@ -497,6 +569,15 @@ private fun MemoDetailScreen(
     var focusedItemRequestId by remember { mutableStateOf<String?>(null) }
     var addButtonScrollRequest by remember { mutableStateOf(0) }
     var itemDragActive by remember { mutableStateOf(false) }
+    var activeListAtTop by remember(memo.id) { mutableStateOf(true) }
+    var deletedListAtTop by remember(memo.id) { mutableStateOf(true) }
+    var detailHeightPx by remember { mutableStateOf(0) }
+    var oneHandOffsetPx by remember(memo.id) { mutableStateOf(0f) }
+    var oneHandMoveSerial by remember(memo.id) { mutableStateOf(0) }
+    val oneHandMaxOffsetPx = (detailHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
+    val oneHandBackdropHeight = with(density) { oneHandOffsetPx.toDp() }
+    val currentListAtTop = if (pagerState.currentPage == 0) activeListAtTop else deletedListAtTop
+    val latestCurrentListAtTop by rememberUpdatedState(currentListAtTop)
 
     fun editableEntry(): ShoppingEntry {
         return requestBlankEntry(memo)
@@ -557,6 +638,12 @@ private fun MemoDetailScreen(
         }
     }
 
+    LaunchedEffect(oneHandModeEnabled, memo.id) {
+        if (!oneHandModeEnabled) {
+            oneHandOffsetPx = 0f
+        }
+    }
+
     Box(
         Modifier
             .fillMaxSize()
@@ -593,7 +680,54 @@ private fun MemoDetailScreen(
                 }
             }
     ) {
-        Column(Modifier.fillMaxSize()) {
+        if (oneHandModeEnabled && oneHandOffsetPx > 1f) {
+            OneHandModeBackdrop(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(oneHandBackdropHeight)
+                    .graphicsLayer {
+                        alpha = (0.25f + (oneHandOffsetPx / oneHandMaxOffsetPx.coerceAtLeast(1f)) * 0.5f)
+                            .coerceIn(0.25f, 0.75f)
+                    }
+            )
+        }
+        Column(
+            Modifier
+                .fillMaxSize()
+                .onGloballyPositioned { detailHeightPx = it.size.height }
+                .graphicsLayer { translationY = oneHandOffsetPx }
+                .pointerInput(oneHandModeEnabled, oneHandMaxOffsetPx, itemDragActive) {
+                    if (!oneHandModeEnabled || itemDragActive) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        var totalX = 0f
+                        var totalY = 0f
+                        var movedContentInGesture = false
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            val delta = change.positionChange()
+                            totalX += delta.x
+                            totalY += delta.y
+                            val verticalGesture = kotlin.math.abs(totalY) > kotlin.math.abs(totalX) * 1.15f
+                            val canPullDown = delta.y > 0f && oneHandOffsetPx < oneHandMaxOffsetPx && latestCurrentListAtTop
+                            val canPushUp = delta.y < 0f && oneHandOffsetPx > 0f
+                            if (verticalGesture && (canPullDown || canPushUp)) {
+                                val nextOffset = (oneHandOffsetPx + delta.y).coerceIn(0f, oneHandMaxOffsetPx)
+                                if (nextOffset != oneHandOffsetPx) {
+                                    oneHandOffsetPx = nextOffset
+                                    if (!movedContentInGesture) {
+                                        oneHandMoveSerial++
+                                        movedContentInGesture = true
+                                    }
+                                    change.consume()
+                                }
+                            }
+                        }
+                    }
+                }
+        ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -707,12 +841,15 @@ private fun MemoDetailScreen(
                         },
                         bottomPadding = listBottomPadding,
                         onItemDragActiveChange = { itemDragActive = it },
+                        onListAtTopChanged = { activeListAtTop = it },
+                        editTapSuppressionSerial = oneHandMoveSerial,
                         onChanged = onChanged
                     )
                 } else {
                     DeletedItemsPage(
                         memo = memo,
                         onItemDragActiveChange = { itemDragActive = it },
+                        onListAtTopChanged = { deletedListAtTop = it },
                         onRestore = {
                             memo.deletedEntries.remove(it)
                             val restored = it.copy(checked = false)
@@ -772,9 +909,12 @@ private fun ActiveItemsPage(
     onEntryFocusCleared: (String) -> Unit,
     bottomPadding: Dp,
     onItemDragActiveChange: (Boolean) -> Unit,
+    onListAtTopChanged: (Boolean) -> Unit,
+    editTapSuppressionSerial: Int,
     onChanged: () -> Unit
 ) {
     val density = LocalDensity.current
+    val focusManager = LocalFocusManager.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val rowLiftPx = with(density) { 96.dp.roundToPx() }
@@ -794,6 +934,11 @@ private fun ActiveItemsPage(
     var deleteSwipeEntryId by remember { mutableStateOf<String?>(null) }
     var deleteSwipeOffsetX by remember { mutableStateOf(0f) }
     var previousBottomPadding by remember { mutableStateOf(bottomPadding) }
+    val listAtTop = !listState.canScrollBackward
+
+    LaunchedEffect(listAtTop) {
+        onListAtTopChanged(listAtTop)
+    }
 
     fun bottomAlignedOffset(extraLiftPx: Int): Int {
         val viewportHeight = listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
@@ -1250,7 +1395,30 @@ private fun ActiveItemsPage(
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(memo.id, draggingEntryId, deleteSwipeEntryId) {
+                if (draggingEntryId != null || deleteSwipeEntryId != null) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    var totalMove = Offset.Zero
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        totalMove += change.positionChange()
+                        if (
+                            totalMove.getDistance() > viewConfiguration.touchSlop &&
+                            kotlin.math.abs(totalMove.y) > kotlin.math.abs(totalMove.x)
+                        ) {
+                            focusManager.clearFocus(force = true)
+                            onSelect(null)
+                            onFocusedItemConsumed()
+                            break
+                        }
+                    }
+                }
+            },
         state = listState,
         contentPadding = PaddingValues(bottom = bottomPadding)
     ) {
@@ -1267,6 +1435,7 @@ private fun ActiveItemsPage(
                 dragOffsetY = if (draggingEntryId == entry.id) draggingOffsetY else 0f,
                 isDeleteSwiping = deleteSwipeEntryId == entry.id,
                 deleteSwipeOffsetX = if (deleteSwipeEntryId == entry.id) deleteSwipeOffsetX else 0f,
+                editTapSuppressionSerial = editTapSuppressionSerial,
                 modifier = if (draggingEntryId == entry.id) {
                     Modifier.zIndex(1f)
                 } else if (deleteSwipeEntryId == entry.id) {
@@ -1368,6 +1537,7 @@ private fun ActiveItemsPage(
 private fun swipeToTrashModifier(
     key: Any,
     enabled: Boolean,
+    editTapSuppressionSerial: Int = 0,
     onPressStarted: () -> Unit = {},
     onTap: () -> Unit = {},
     onSwipeStart: () -> Unit,
@@ -1375,10 +1545,12 @@ private fun swipeToTrashModifier(
     onSwipeEnd: () -> Unit
 ): Modifier {
     val focusManager = LocalFocusManager.current
+    val latestEditTapSuppressionSerial by rememberUpdatedState(editTapSuppressionSerial)
     return Modifier.pointerInput(key, enabled) {
         if (!enabled) return@pointerInput
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            val editTapSuppressionSerialAtDown = latestEditTapSuppressionSerial
             down.consume()
             focusManager.clearFocus(force = true)
             onPressStarted()
@@ -1395,7 +1567,9 @@ private fun swipeToTrashModifier(
                 }
             }
             if (preLongPressResult == true) {
-                onTap()
+                if (latestEditTapSuppressionSerial == editTapSuppressionSerialAtDown) {
+                    onTap()
+                }
                 return@awaitEachGesture
             } else if (preLongPressResult == false) {
                 return@awaitEachGesture
@@ -1511,6 +1685,7 @@ private fun ShoppingEntryRow(
     dragOffsetY: Float,
     isDeleteSwiping: Boolean,
     deleteSwipeOffsetX: Float,
+    editTapSuppressionSerial: Int,
     modifier: Modifier = Modifier,
     onSelect: () -> Unit,
     onPressStarted: () -> Unit,
@@ -1533,6 +1708,7 @@ private fun ShoppingEntryRow(
     val rowSwipeModifier = swipeToTrashModifier(
         key = entry.id,
         enabled = canDrag,
+        editTapSuppressionSerial = editTapSuppressionSerial,
         onPressStarted = onPressStarted,
         onTap = onEditRequested,
         onSwipeStart = onDeleteSwipeStart,
@@ -1715,17 +1891,27 @@ private fun RestoreIconButton(onClick: () -> Unit) {
 private fun DeletedItemsPage(
     memo: ShoppingMemo,
     onItemDragActiveChange: (Boolean) -> Unit,
+    onListAtTopChanged: (Boolean) -> Unit,
     onRestore: (ShoppingEntry) -> Unit,
     onErase: (ShoppingEntry) -> Unit
 ) {
     if (memo.deletedEntries.isEmpty()) {
+        LaunchedEffect(Unit) {
+            onListAtTopChanged(true)
+        }
         PlaceholderBody("蜑企勁貂医い繧､繝・Β縺ｯ縺ゅｊ縺ｾ縺帙ｓ")
         return
     }
     val density = LocalDensity.current
+    val listState = rememberLazyListState()
     val actionThresholdPx = with(density) { 104.dp.toPx() }
     var draggingEntryId by remember { mutableStateOf<String?>(null) }
     var dragOffsetX by remember { mutableStateOf(0f) }
+    val listAtTop = !listState.canScrollBackward
+
+    LaunchedEffect(listAtTop) {
+        onListAtTopChanged(listAtTop)
+    }
 
     fun startDrag(entry: ShoppingEntry) {
         draggingEntryId = entry.id
@@ -1749,7 +1935,10 @@ private fun DeletedItemsPage(
         }
     }
 
-    LazyColumn(Modifier.fillMaxSize()) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        state = listState
+    ) {
         items(memo.deletedEntries, key = { it.id }) { entry ->
             DeletedEntryRow(
                 entry = entry,
@@ -1931,15 +2120,52 @@ private fun FavoritesScreen(
 }
 
 @Composable
-private fun SettingsScreen(memoCount: Int) {
+private fun SettingsScreen(
+    memoCount: Int,
+    oneHandModeEnabled: Boolean,
+    onOneHandModeChanged: (Boolean) -> Unit
+) {
     Column(Modifier.fillMaxSize()) {
         Header("設定")
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            SettingToggleRow(
+                title = "片手だけで操作可能モード",
+                description = "一覧を下半分までスクロールできるようにし、片手で操作しやすくします。",
+                checked = oneHandModeEnabled,
+                onCheckedChange = onOneHandModeChanged
+            )
             SettingRow("保存方式", "端末内保存")
             SettingRow("登録リスト数", "${memoCount}件")
             SettingRow("通信", "サーバーアクセスなし")
         }
     }
+}
+
+@Composable
+private fun SettingToggleRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp)
+        ) {
+            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+            Spacer(Modifier.height(4.dp))
+            Text(description, color = Color(0xFF666666), fontSize = 13.sp, lineHeight = 18.sp)
+        }
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+    }
+    Divider(color = Color(0xFFE0E0E0))
 }
 
 @Composable
