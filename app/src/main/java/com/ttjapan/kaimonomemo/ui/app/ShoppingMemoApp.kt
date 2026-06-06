@@ -65,6 +65,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -759,6 +760,7 @@ private fun ActiveItemsPage(
     var draggingEntryId by remember { mutableStateOf<String?>(null) }
     var draggingOffsetY by remember { mutableStateOf(0f) }
     var bottomClampGapY by remember { mutableStateOf(0f) }
+    var dragDirectionY by remember { mutableStateOf(0) }
     var autoReorderDirection by remember { mutableStateOf(0) }
     var deleteSwipeEntryId by remember { mutableStateOf<String?>(null) }
     var deleteSwipeOffsetX by remember { mutableStateOf(0f) }
@@ -800,6 +802,7 @@ private fun ActiveItemsPage(
             draggingEntryId = null
             draggingOffsetY = 0f
             bottomClampGapY = 0f
+            dragDirectionY = 0
             autoReorderDirection = 0
             deleteSwipeEntryId = null
             deleteSwipeOffsetX = 0f
@@ -869,10 +872,15 @@ private fun ActiveItemsPage(
         var visualTop = itemInfo.offset + draggingOffsetY
         var visualBottom = visualTop + itemInfo.size
         val edgeBand = itemInfo.size * 0.35f
-        autoReorderDirection = when {
+        val detectedAutoDirection = when {
             visualBottom >= autoScrollEnd - edgeBand -> 1
             visualTop <= viewportStart + edgeBand -> -1
             else -> 0
+        }
+        autoReorderDirection = when {
+            dragDirectionY > 0 && detectedAutoDirection < 0 -> 0
+            dragDirectionY < 0 && detectedAutoDirection > 0 -> 0
+            else -> detectedAutoDirection
         }
         val lowerLimitOverflow = visualBottom - dragDisplayEnd
         if (lowerLimitOverflow > 0f) {
@@ -884,7 +892,7 @@ private fun ActiveItemsPage(
             visualBottom -= lowerLimitOverflow
         }
         val upperLimitOverflow = viewportStart - visualTop
-        if (upperLimitOverflow > 0f) {
+        if (upperLimitOverflow > 0f && dragDirectionY <= 0) {
             draggingOffsetY += upperLimitOverflow
             bottomClampGapY = 0f
             visualTop += upperLimitOverflow
@@ -903,11 +911,21 @@ private fun ActiveItemsPage(
         }
     }
 
+    fun keepDraggedEntryVisibleAfterLayout(entry: ShoppingEntry, accumulateBottomGap: Boolean = true) {
+        scope.launch {
+            withFrameNanos { }
+            if (draggingEntryId == entry.id) {
+                gentlyKeepDraggedEntryVisible(entry, accumulateBottomGap)
+            }
+        }
+    }
+
     fun startReorder(entry: ShoppingEntry) {
         if (entry.name.isBlank()) return
         draggingEntryId = entry.id
         draggingOffsetY = 0f
         bottomClampGapY = 0f
+        dragDirectionY = 0
         autoReorderDirection = 0
         scrollAnchor = ScrollAnchor.Item
         onSelect(null)
@@ -915,6 +933,11 @@ private fun ActiveItemsPage(
 
     fun dragReorder(entry: ShoppingEntry, deltaY: Float) {
         if (draggingEntryId != entry.id) return
+        if (deltaY > 0f) {
+            dragDirectionY = 1
+        } else if (deltaY < 0f) {
+            dragDirectionY = -1
+        }
         val effectiveDeltaY = if (bottomClampGapY > 0f) {
             if (deltaY >= 0f) {
                 bottomClampGapY += deltaY
@@ -928,6 +951,7 @@ private fun ActiveItemsPage(
             deltaY
         }
         draggingOffsetY += effectiveDeltaY
+        var movedDuringDrag = false
 
         while (true) {
             val reorderGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
@@ -943,14 +967,13 @@ private fun ActiveItemsPage(
                 val nextHeight = visibleItemHeightPx(next)
                 if (draggingOffsetY <= nextHeight / 2f) break
                 if (moveEntry(entry, 1)) {
+                    movedDuringDrag = true
                     draggingOffsetY -= nextHeight
                     if (!entry.checked) {
                         val newIndex = memo.entries.filter { it.name.isNotBlank() && !it.checked }.indexOf(entry)
                         if (newIndex >= 0 && newIndex <= listState.firstVisibleItemIndex) {
                             scope.launch { listState.scrollToItem(newIndex) }
                         }
-                    } else {
-                        gentlyKeepDraggedEntryVisible(entry)
                     }
                 } else {
                     draggingOffsetY = 0f
@@ -965,14 +988,13 @@ private fun ActiveItemsPage(
                 val previousHeight = visibleItemHeightPx(previous)
                 if (-draggingOffsetY <= previousHeight / 2f) break
                 if (moveEntry(entry, -1)) {
+                    movedDuringDrag = true
                     draggingOffsetY += previousHeight
                     if (!entry.checked) {
                         val newIndex = memo.entries.filter { it.name.isNotBlank() && !it.checked }.indexOf(entry)
                         if (newIndex >= 0 && newIndex <= listState.firstVisibleItemIndex) {
                             scope.launch { listState.scrollToItem(newIndex) }
                         }
-                    } else {
-                        gentlyKeepDraggedEntryVisible(entry)
                     }
                 } else {
                     draggingOffsetY = 0f
@@ -990,13 +1012,18 @@ private fun ActiveItemsPage(
         } else if (index == reorderGroup.lastIndex && draggingOffsetY > 0f) {
             draggingOffsetY = 0f
         }
-        gentlyKeepDraggedEntryVisible(entry)
+        if (movedDuringDrag) {
+            keepDraggedEntryVisibleAfterLayout(entry)
+        } else {
+            gentlyKeepDraggedEntryVisible(entry)
+        }
     }
 
     fun endReorder() {
         draggingEntryId = null
         draggingOffsetY = 0f
         bottomClampGapY = 0f
+        dragDirectionY = 0
         autoReorderDirection = 0
     }
 
@@ -1018,7 +1045,7 @@ private fun ActiveItemsPage(
                 val scrollAmount = if (direction > 0) neighborHeight else -neighborHeight
                 draggingOffsetY += scrollAmount
                 scope.launch { listState.scrollBy(scrollAmount) }
-                gentlyKeepDraggedEntryVisible(entry, accumulateBottomGap = false)
+                keepDraggedEntryVisibleAfterLayout(entry, accumulateBottomGap = false)
                 val updatedGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
                 val updatedIndex = updatedGroup.indexOf(entry)
                 autoReorderDirection = if (updatedGroup.getOrNull(updatedIndex + direction) != null) {
