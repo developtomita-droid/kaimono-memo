@@ -129,8 +129,12 @@ private enum class ScrollAnchor {
 private val BottomBarHeight = 86.dp
 private val FabKeyboardGap = 10.dp
 private val DetailListExtraBottom = 96.dp
+private val ListTopAnchorHeight = 1.dp
+private const val ListTopAnchorIndex = 0
+private const val ListTopAnchorKey = "list-top-anchor"
 private const val AddListItemKey = "add-list-item"
 private const val DetailBackSwipeThresholdPx = 140f
+private const val DragAutoReorderDelayMillis = 100L
 
 private fun pruneBlankEntries(memo: ShoppingMemo) {
     memo.entries.removeAll { it.name.isBlank() }
@@ -756,6 +760,7 @@ private fun ActiveItemsPage(
     val dragEdgePaddingPx = with(density) { 8.dp.toPx() }
     val fallbackRowHeightPx = with(density) { 56.dp.toPx() }
     val deleteSwipeThresholdPx = with(density) { 104.dp.toPx() }
+    val listTopAnchorIndexOffset = 1
     var scrollAnchor by remember { mutableStateOf(ScrollAnchor.Item) }
     var draggingEntryId by remember { mutableStateOf<String?>(null) }
     var draggingOffsetY by remember { mutableStateOf(0f) }
@@ -782,19 +787,19 @@ private fun ActiveItemsPage(
         val targetId = focusedItemRequestId ?: selectedEntryId ?: return@LaunchedEffect
         val index = memo.entries.indexOfFirst { it.id == targetId }
         if (index >= 0) {
-            listState.animateScrollToItem(index = index, scrollOffset = bottomAlignedOffset(rowLiftPx))
+            listState.animateScrollToItem(index = index + listTopAnchorIndexOffset, scrollOffset = bottomAlignedOffset(rowLiftPx))
         }
     }
 
     LaunchedEffect(scrollAnchor, bottomPadding, memo.entries.size) {
         if (scrollAnchor != ScrollAnchor.AddButton) return@LaunchedEffect
-        val addIndex = memo.entries.count { !it.checked }
+        val addIndex = memo.entries.count { !it.checked } + listTopAnchorIndexOffset
         listState.animateScrollToItem(index = addIndex, scrollOffset = bottomAlignedOffset(addButtonLiftPx))
     }
 
     LaunchedEffect(addButtonScrollRequest, bottomPadding, memo.entries.size) {
         if (addButtonScrollRequest <= 0) return@LaunchedEffect
-        val addIndex = memo.entries.count { !it.checked }
+        val addIndex = memo.entries.count { !it.checked } + listTopAnchorIndexOffset
         listState.animateScrollToItem(index = addIndex, scrollOffset = bottomAlignedOffset(addButtonLiftPx))
     }
 
@@ -858,9 +863,10 @@ private fun ActiveItemsPage(
         return if (entry.checked) {
             val doneIndex = memo.entries.filter { it.checked && it.name.isNotBlank() }.indexOf(entry)
             val uncheckedCount = memo.entries.count { !it.checked }
-            if (doneIndex < 0) -1 else uncheckedCount + 2 + doneIndex
+            if (doneIndex < 0) -1 else uncheckedCount + 2 + doneIndex + listTopAnchorIndexOffset
         } else {
-            memo.entries.filter { !it.checked }.indexOf(entry)
+            val index = memo.entries.filter { !it.checked }.indexOf(entry)
+            if (index < 0) -1 else index + listTopAnchorIndexOffset
         }
     }
 
@@ -1003,6 +1009,10 @@ private fun ActiveItemsPage(
         autoReorderDirection = 0
         scrollAnchor = ScrollAnchor.Item
         onSelect(null)
+        val entryListIndex = listIndexForEntry(entry)
+        if (entryListIndex == listTopAnchorIndexOffset && listState.firstVisibleItemIndex == entryListIndex) {
+            scope.launch { listState.scrollToItem(ListTopAnchorIndex) }
+        }
     }
 
     fun dragReorder(entry: ShoppingEntry, deltaY: Float) {
@@ -1062,8 +1072,9 @@ private fun ActiveItemsPage(
                     draggingOffsetY -= nextHeight
                     if (!entry.checked) {
                         val newIndex = memo.entries.filter { it.name.isNotBlank() && !it.checked }.indexOf(entry)
-                        if (newIndex >= 0 && newIndex <= listState.firstVisibleItemIndex) {
-                            scope.launch { listState.scrollToItem(newIndex) }
+                        val newListIndex = newIndex + listTopAnchorIndexOffset
+                        if (newIndex >= 0 && newListIndex <= listState.firstVisibleItemIndex) {
+                            scope.launch { listState.scrollToItem(newListIndex) }
                         }
                     }
                 } else {
@@ -1083,8 +1094,9 @@ private fun ActiveItemsPage(
                     draggingOffsetY += previousHeight
                     if (!entry.checked) {
                         val newIndex = memo.entries.filter { it.name.isNotBlank() && !it.checked }.indexOf(entry)
-                        if (newIndex >= 0 && newIndex <= listState.firstVisibleItemIndex) {
-                            scope.launch { listState.scrollToItem(newIndex) }
+                        val newListIndex = newIndex + listTopAnchorIndexOffset
+                        if (newIndex >= 0 && newListIndex <= listState.firstVisibleItemIndex) {
+                            scope.launch { listState.scrollToItem(newListIndex) }
                         }
                     }
                 } else {
@@ -1134,7 +1146,7 @@ private fun ActiveItemsPage(
 
     LaunchedEffect(draggingEntryId, autoReorderDirection) {
         while (draggingEntryId != null && autoReorderDirection != 0) {
-            delay(200)
+            delay(DragAutoReorderDelayMillis)
             val entry = memo.entries.firstOrNull { it.id == draggingEntryId } ?: break
             val group = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
             val index = group.indexOf(entry)
@@ -1219,6 +1231,9 @@ private fun ActiveItemsPage(
         state = listState,
         contentPadding = PaddingValues(bottom = bottomPadding)
     ) {
+        item(key = ListTopAnchorKey) {
+            Spacer(Modifier.height(ListTopAnchorHeight))
+        }
         itemsIndexed(memo.entries.filter { !it.checked }, key = { _, entry -> entry.id }) { index, entry ->
             ShoppingEntryRow(
                 entry = entry,
