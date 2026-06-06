@@ -869,6 +869,7 @@ private fun ActiveItemsPage(
         val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
             ?: return
         val viewportStart = listState.layoutInfo.viewportStartOffset
+        val autoScrollStart = viewportStart + bottomPaddingPx
         val autoScrollEnd = listState.layoutInfo.viewportEndOffset - bottomPaddingPx
         val dragDisplayStart = viewportStart + dragEdgePaddingPx
         val dragDisplayEnd = listState.layoutInfo.viewportEndOffset - dragEdgePaddingPx
@@ -877,7 +878,7 @@ private fun ActiveItemsPage(
         val edgeBand = itemInfo.size * 0.35f
         val detectedAutoDirection = when {
             visualBottom >= autoScrollEnd - edgeBand -> 1
-            visualTop <= viewportStart + edgeBand -> -1
+            visualTop <= autoScrollStart + edgeBand -> -1
             else -> 0
         }
         autoReorderDirection = when {
@@ -886,10 +887,10 @@ private fun ActiveItemsPage(
             else -> detectedAutoDirection
         }
         val lowerLimitOverflow = visualBottom - dragDisplayEnd
-        if (lowerLimitOverflow > 0f) {
+        if (lowerLimitOverflow > 0f && (bottomClampGapY > 0f || dragDirectionY >= 0)) {
             draggingOffsetY -= lowerLimitOverflow
             topClampGapY = 0f
-            if (accumulateBottomGap) {
+            if (accumulateBottomGap && dragDirectionY >= 0) {
                 bottomClampGapY += lowerLimitOverflow
             }
             visualTop -= lowerLimitOverflow
@@ -897,10 +898,10 @@ private fun ActiveItemsPage(
         }
         val upperLimitOverflow = viewportStart - visualTop
         val upperDisplayOverflow = dragDisplayStart - visualTop
-        if (upperDisplayOverflow > 0f) {
+        if (upperDisplayOverflow > 0f && (topClampGapY > 0f || dragDirectionY <= 0)) {
             draggingOffsetY += upperDisplayOverflow
             bottomClampGapY = 0f
-            if (accumulateBottomGap) {
+            if (accumulateBottomGap && dragDirectionY <= 0) {
                 topClampGapY += upperDisplayOverflow
             }
             visualTop += upperDisplayOverflow
@@ -915,8 +916,8 @@ private fun ActiveItemsPage(
         val overflowBottom = visualBottom - dragDisplayEnd
         val overflowTop = viewportStart - visualTop
         val scrollAmount = when {
-            overflowBottom > 0 -> overflowBottom.coerceAtMost(itemInfo.size / 2f)
-            overflowTop > 0 -> -overflowTop.coerceAtMost(itemInfo.size / 2f)
+            overflowBottom > 0 && (bottomClampGapY > 0f || dragDirectionY >= 0) -> overflowBottom.coerceAtMost(itemInfo.size / 2f)
+            overflowTop > 0 && (topClampGapY > 0f || dragDirectionY <= 0) -> -overflowTop.coerceAtMost(itemInfo.size / 2f)
             else -> 0
         }.toFloat()
         if (scrollAmount != 0f) {
