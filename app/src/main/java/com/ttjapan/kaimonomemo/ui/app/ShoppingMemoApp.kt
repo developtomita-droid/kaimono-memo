@@ -742,11 +742,13 @@ private fun ActiveItemsPage(
     val rowLiftPx = with(density) { 96.dp.roundToPx() }
     val addButtonLiftPx = with(density) { 72.dp.roundToPx() }
     val bottomPaddingPx = with(density) { bottomPadding.roundToPx() }
+    val dragEdgePaddingPx = with(density) { 8.dp.toPx() }
     val fallbackRowHeightPx = with(density) { 56.dp.toPx() }
     val deleteSwipeThresholdPx = with(density) { 104.dp.toPx() }
     var scrollAnchor by remember { mutableStateOf(ScrollAnchor.Item) }
     var draggingEntryId by remember { mutableStateOf<String?>(null) }
     var draggingOffsetY by remember { mutableStateOf(0f) }
+    var bottomClampGapY by remember { mutableStateOf(0f) }
     var autoReorderDirection by remember { mutableStateOf(0) }
     var deleteSwipeEntryId by remember { mutableStateOf<String?>(null) }
     var deleteSwipeOffsetX by remember { mutableStateOf(0f) }
@@ -787,6 +789,7 @@ private fun ActiveItemsPage(
         if (bottomPadding < previousBottomPadding) {
             draggingEntryId = null
             draggingOffsetY = 0f
+            bottomClampGapY = 0f
             autoReorderDirection = 0
             deleteSwipeEntryId = null
             deleteSwipeOffsetX = 0f
@@ -846,21 +849,38 @@ private fun ActiveItemsPage(
         }
     }
 
-    fun gentlyKeepDraggedEntryVisible(entry: ShoppingEntry) {
+    fun gentlyKeepDraggedEntryVisible(entry: ShoppingEntry, accumulateBottomGap: Boolean = true) {
         val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
         val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
             ?: return
         val viewportStart = listState.layoutInfo.viewportStartOffset
-        val viewportEnd = listState.layoutInfo.viewportEndOffset - bottomPaddingPx
-        val visualTop = itemInfo.offset + draggingOffsetY
-        val visualBottom = visualTop + itemInfo.size
+        val autoScrollEnd = listState.layoutInfo.viewportEndOffset - bottomPaddingPx
+        val dragDisplayEnd = listState.layoutInfo.viewportEndOffset - dragEdgePaddingPx
+        var visualTop = itemInfo.offset + draggingOffsetY
+        var visualBottom = visualTop + itemInfo.size
         val edgeBand = itemInfo.size * 0.35f
         autoReorderDirection = when {
-            visualBottom >= viewportEnd - edgeBand -> 1
+            visualBottom >= autoScrollEnd - edgeBand -> 1
             visualTop <= viewportStart + edgeBand -> -1
             else -> 0
         }
-        val overflowBottom = visualBottom - viewportEnd
+        val lowerLimitOverflow = visualBottom - dragDisplayEnd
+        if (lowerLimitOverflow > 0f) {
+            draggingOffsetY -= lowerLimitOverflow
+            if (accumulateBottomGap) {
+                bottomClampGapY += lowerLimitOverflow
+            }
+            visualTop -= lowerLimitOverflow
+            visualBottom -= lowerLimitOverflow
+        }
+        val upperLimitOverflow = viewportStart - visualTop
+        if (upperLimitOverflow > 0f) {
+            draggingOffsetY += upperLimitOverflow
+            bottomClampGapY = 0f
+            visualTop += upperLimitOverflow
+            visualBottom += upperLimitOverflow
+        }
+        val overflowBottom = visualBottom - dragDisplayEnd
         val overflowTop = viewportStart - visualTop
         val scrollAmount = when {
             overflowBottom > 0 -> overflowBottom.coerceAtMost(itemInfo.size / 2f)
@@ -877,6 +897,7 @@ private fun ActiveItemsPage(
         if (entry.name.isBlank()) return
         draggingEntryId = entry.id
         draggingOffsetY = 0f
+        bottomClampGapY = 0f
         autoReorderDirection = 0
         scrollAnchor = ScrollAnchor.Item
         onSelect(null)
@@ -884,7 +905,19 @@ private fun ActiveItemsPage(
 
     fun dragReorder(entry: ShoppingEntry, deltaY: Float) {
         if (draggingEntryId != entry.id) return
-        draggingOffsetY += deltaY
+        val effectiveDeltaY = if (bottomClampGapY > 0f) {
+            if (deltaY >= 0f) {
+                bottomClampGapY += deltaY
+                0f
+            } else {
+                val releasedGap = minOf(bottomClampGapY, -deltaY)
+                bottomClampGapY -= releasedGap
+                deltaY + releasedGap
+            }
+        } else {
+            deltaY
+        }
+        draggingOffsetY += effectiveDeltaY
 
         while (true) {
             val reorderGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
@@ -953,12 +986,13 @@ private fun ActiveItemsPage(
     fun endReorder() {
         draggingEntryId = null
         draggingOffsetY = 0f
+        bottomClampGapY = 0f
         autoReorderDirection = 0
     }
 
     LaunchedEffect(draggingEntryId, autoReorderDirection) {
         while (draggingEntryId != null && autoReorderDirection != 0) {
-            delay(300)
+            delay(200)
             val entry = memo.entries.firstOrNull { it.id == draggingEntryId } ?: break
             val group = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
             val index = group.indexOf(entry)
@@ -974,6 +1008,7 @@ private fun ActiveItemsPage(
                 val scrollAmount = if (direction > 0) neighborHeight else -neighborHeight
                 draggingOffsetY += scrollAmount
                 scope.launch { listState.scrollBy(scrollAmount) }
+                gentlyKeepDraggedEntryVisible(entry, accumulateBottomGap = false)
                 val updatedGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
                 val updatedIndex = updatedGroup.indexOf(entry)
                 autoReorderDirection = if (updatedGroup.getOrNull(updatedIndex + direction) != null) {
