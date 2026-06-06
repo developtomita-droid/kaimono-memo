@@ -135,6 +135,7 @@ private const val ListTopAnchorKey = "list-top-anchor"
 private const val AddListItemKey = "add-list-item"
 private const val DetailBackSwipeThresholdPx = 140f
 private const val DragAutoReorderDelayMillis = 100L
+private val TrashTabSelectedColor = Color(0xFFE91E63)
 
 private fun pruneBlankEntries(memo: ShoppingMemo) {
     memo.entries.removeAll { it.name.isBlank() }
@@ -639,10 +640,12 @@ private fun MemoDetailScreen(
             Row(modifier = Modifier.fillMaxWidth().height(50.dp)) {
                 tabs.forEachIndexed { index, title ->
                     val selected = pagerState.currentPage == index
+                    val selectedTrashTab = selected && index == 1
                     Column(
                         modifier = Modifier
                             .weight(if (index == 0) 2f else 1f)
                             .fillMaxHeight()
+                            .background(if (selectedTrashTab) TrashTabSelectedColor else Color.White)
                             .clickable { scope.launch { pagerState.animateScrollToPage(index) } },
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
@@ -651,14 +654,24 @@ private fun MemoDetailScreen(
                             text = title,
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (selected) Color(0xFF1976D2) else Color(0xFF777777)
+                            color = when {
+                                selectedTrashTab -> Color.White
+                                selected -> Color(0xFF1976D2)
+                                else -> Color(0xFF777777)
+                            }
                         )
                         Spacer(Modifier.height(9.dp))
                         Box(
                             modifier = Modifier
                                 .height(3.dp)
                                 .fillMaxWidth()
-                                .background(if (selected) Color(0xFF1565C0) else Color.Transparent)
+                                .background(
+                                    when {
+                                        selectedTrashTab -> Color.White
+                                        selected -> Color(0xFF1565C0)
+                                        else -> Color.Transparent
+                                    }
+                                )
                         )
                     }
                 }
@@ -692,6 +705,7 @@ private fun MemoDetailScreen(
                 } else {
                     DeletedItemsPage(
                         memo = memo,
+                        onItemDragActiveChange = { itemDragActive = it },
                         onRestore = {
                             memo.deletedEntries.remove(it)
                             val restored = it.copy(checked = false)
@@ -1399,6 +1413,86 @@ private fun swipeToTrashModifier(
 }
 
 @Composable
+private fun horizontalLongPressSwipeModifier(
+    key: Any,
+    onSwipeStart: () -> Unit,
+    onSwipeDrag: (Float) -> Unit,
+    onSwipeEnd: () -> Unit
+): Modifier {
+    val focusManager = LocalFocusManager.current
+    return Modifier.pointerInput(key) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            down.consume()
+            focusManager.clearFocus(force = true)
+            val preLongPressResult = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                var totalMove = Offset.Zero
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull false
+                    totalMove += change.positionChange()
+                    if (totalMove.getDistance() > viewConfiguration.touchSlop) {
+                        return@withTimeoutOrNull false
+                    }
+                    if (!change.pressed) return@withTimeoutOrNull true
+                }
+            }
+            if (preLongPressResult != null) return@awaitEachGesture
+
+            onSwipeStart()
+            try {
+                val activePointerId = down.id
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == activePointerId } ?: break
+                    if (!change.pressed) break
+                    val delta = change.positionChange()
+                    if (delta.x != 0f || delta.y != 0f) {
+                        change.consume()
+                        onSwipeDrag(delta.x)
+                    }
+                }
+            } finally {
+                onSwipeEnd()
+            }
+        }
+    }
+}
+
+@Composable
+private fun horizontalPressSwipeModifier(
+    key: Any,
+    onSwipeStart: () -> Unit,
+    onSwipeDrag: (Float) -> Unit,
+    onSwipeEnd: () -> Unit
+): Modifier {
+    val focusManager = LocalFocusManager.current
+    return Modifier.pointerInput(key) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            down.consume()
+            focusManager.clearFocus(force = true)
+            onSwipeStart()
+            try {
+                val activePointerId = down.id
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == activePointerId } ?: break
+                    if (!change.pressed) break
+                    val delta = change.positionChange()
+                    if (delta.x != 0f || delta.y != 0f) {
+                        change.consume()
+                        onSwipeDrag(delta.x)
+                    }
+                }
+            } finally {
+                onSwipeEnd()
+            }
+        }
+    }
+}
+
+@Composable
 private fun ShoppingEntryRow(
     entry: ShoppingEntry,
     displayNumber: Int?,
@@ -1585,7 +1679,9 @@ private fun DoneEntryRow(
                 .then(swipeModifier)
                 .padding(vertical = 12.dp)
         )
-        RestoreIconButton(onClick = onRestore)
+        if (!isDragging && !isDeleteSwiping) {
+            RestoreIconButton(onClick = onRestore)
+        }
         if (isDeleteSwiping) {
             Text(
                 text = "→ 🗑",
@@ -1608,6 +1704,126 @@ private fun RestoreIconButton(onClick: () -> Unit) {
 
 @Composable
 private fun DeletedItemsPage(
+    memo: ShoppingMemo,
+    onItemDragActiveChange: (Boolean) -> Unit,
+    onRestore: (ShoppingEntry) -> Unit,
+    onErase: (ShoppingEntry) -> Unit
+) {
+    if (memo.deletedEntries.isEmpty()) {
+        PlaceholderBody("蜑企勁貂医い繧､繝・Β縺ｯ縺ゅｊ縺ｾ縺帙ｓ")
+        return
+    }
+    val density = LocalDensity.current
+    val actionThresholdPx = with(density) { 104.dp.toPx() }
+    var draggingEntryId by remember { mutableStateOf<String?>(null) }
+    var dragOffsetX by remember { mutableStateOf(0f) }
+
+    fun startDrag(entry: ShoppingEntry) {
+        draggingEntryId = entry.id
+        dragOffsetX = 0f
+        onItemDragActiveChange(true)
+    }
+
+    fun drag(entry: ShoppingEntry, deltaX: Float) {
+        if (draggingEntryId != entry.id) return
+        dragOffsetX = (dragOffsetX + deltaX).coerceIn(-actionThresholdPx * 1.4f, actionThresholdPx * 1.4f)
+    }
+
+    fun endDrag(entry: ShoppingEntry) {
+        val offset = dragOffsetX
+        draggingEntryId = null
+        dragOffsetX = 0f
+        onItemDragActiveChange(false)
+        when {
+            offset <= -actionThresholdPx -> onRestore(entry)
+            offset >= actionThresholdPx -> onErase(entry)
+        }
+    }
+
+    LazyColumn(Modifier.fillMaxSize()) {
+        items(memo.deletedEntries, key = { it.id }) { entry ->
+            DeletedEntryRow(
+                entry = entry,
+                isDragging = draggingEntryId == entry.id,
+                dragOffsetX = if (draggingEntryId == entry.id) dragOffsetX else 0f,
+                onRestore = { onRestore(entry) },
+                onErase = { onErase(entry) },
+                onDragStart = { startDrag(entry) },
+                onDrag = { deltaX -> drag(entry, deltaX) },
+                onDragEnd = { endDrag(entry) }
+            )
+            Divider(color = Color(0xFFE0E0E0))
+        }
+    }
+}
+
+@Composable
+private fun DeletedEntryRow(
+    entry: ShoppingEntry,
+    isDragging: Boolean,
+    dragOffsetX: Float,
+    onRestore: () -> Unit,
+    onErase: () -> Unit,
+    onDragStart: () -> Unit,
+    onDrag: (Float) -> Unit,
+    onDragEnd: () -> Unit
+) {
+    val swipeModifier = horizontalPressSwipeModifier(
+        key = "deleted-${entry.id}",
+        onSwipeStart = onDragStart,
+        onSwipeDrag = onDrag,
+        onSwipeEnd = onDragEnd
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                translationX = dragOffsetX
+                scaleX = if (isDragging) 1.02f else 1f
+                scaleY = if (isDragging) 1.02f else 1f
+                shadowElevation = if (isDragging) 16f else 0f
+            }
+            .background(Color.White)
+            .then(swipeModifier)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (isDragging) {
+            Text(
+                text = "戻す",
+                color = Color(0xFF1976D2),
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(end = 12.dp)
+            )
+        } else {
+            Text(
+                text = "・",
+                color = Color(0xFF888888),
+                fontSize = 24.sp,
+                modifier = Modifier.padding(end = 10.dp)
+            )
+        }
+        Text(
+            text = entry.name.ifBlank { "辟｡鬘後・繧｢繧､繝・Β" },
+            fontSize = 19.sp,
+            color = Color(0xFF666666),
+            modifier = Modifier.weight(1f)
+        )
+        if (isDragging) {
+            Text(
+                text = "消去",
+                color = Color(0xFFD32F2F),
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 12.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeletedItemsPageLegacy(
     memo: ShoppingMemo,
     onRestore: (ShoppingEntry) -> Unit,
     onErase: (ShoppingEntry) -> Unit
