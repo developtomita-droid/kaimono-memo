@@ -6,7 +6,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -47,6 +46,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -76,10 +77,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -143,6 +142,7 @@ private const val AddListItemKey = "add-list-item"
 private const val DetailBackSwipeThresholdPx = 140f
 private const val DragAutoReorderDelayMillis = 100L
 private const val OneHandMaxOffsetRatio = 0.46f
+private const val OneHandScrollSpeedMultiplier = 1.5f
 private val TrashTabSelectedColor = Color(0xFFE91E63)
 
 private fun pruneBlankEntries(memo: ShoppingMemo) {
@@ -486,54 +486,15 @@ private fun AddMemoCard(compact: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun OneHandModeBackdrop(modifier: Modifier = Modifier) {
-    Canvas(
+    Box(
         modifier = modifier
             .background(Color(0xFFFAFCFF))
-            .padding(horizontal = 28.dp, vertical = 18.dp)
     ) {
-        val paperColor = Color(0xFFEAF4F2)
-        val accentColor = Color(0xFFFDECEF)
-        val lineColor = Color(0xFFDCEAE7)
-        val strokeWidth = 3f
-        val cardWidth = size.width * 0.56f
-        val cardHeight = size.height * 0.58f
-        val cardLeft = size.width * 0.2f
-        val cardTop = size.height * 0.18f
-        drawRoundRect(
-            color = accentColor,
-            topLeft = Offset(cardLeft + size.width * 0.06f, cardTop + size.height * 0.08f),
-            size = Size(cardWidth, cardHeight),
-            cornerRadius = androidx.compose.ui.geometry.CornerRadius(24f, 24f),
-            style = Stroke(width = strokeWidth)
-        )
-        drawRoundRect(
-            color = paperColor,
-            topLeft = Offset(cardLeft, cardTop),
-            size = Size(cardWidth, cardHeight),
-            cornerRadius = androidx.compose.ui.geometry.CornerRadius(24f, 24f),
-            style = Stroke(width = strokeWidth)
-        )
-        val startX = cardLeft + cardWidth * 0.18f
-        val endX = cardLeft + cardWidth * 0.84f
-        repeat(4) { index ->
-            val y = cardTop + cardHeight * (0.24f + index * 0.16f)
-            drawCircle(
-                color = paperColor,
-                radius = 5f,
-                center = Offset(cardLeft + cardWidth * 0.11f, y)
-            )
-            drawLine(
-                color = lineColor,
-                start = Offset(startX, y),
-                end = Offset(endX, y),
-                strokeWidth = strokeWidth,
-            )
-        }
-        drawLine(
-            color = accentColor,
-            start = Offset(size.width * 0.08f, size.height * 0.82f),
-            end = Offset(size.width * 0.92f, size.height * 0.82f),
-            strokeWidth = 2f
+        Image(
+            painter = painterResource(R.drawable.one_hand_food_pattern_a),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
         )
     }
 }
@@ -574,6 +535,7 @@ private fun MemoDetailScreen(
     var detailHeightPx by remember { mutableStateOf(0) }
     var oneHandOffsetPx by remember(memo.id) { mutableStateOf(0f) }
     var oneHandMoveSerial by remember(memo.id) { mutableStateOf(0) }
+    var oneHandFlingGeneration by remember(memo.id) { mutableStateOf(0) }
     val oneHandMaxOffsetPx = (detailHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
     val oneHandBackdropHeight = with(density) { oneHandOffsetPx.toDp() }
     val currentListAtTop = if (pagerState.currentPage == 0) activeListAtTop else deletedListAtTop
@@ -644,6 +606,25 @@ private fun MemoDetailScreen(
         }
     }
 
+    fun startOneHandFling(initialVelocityY: Float) {
+        if (oneHandMaxOffsetPx <= 0f || kotlin.math.abs(initialVelocityY) < 120f) return
+        val generation = ++oneHandFlingGeneration
+        oneHandMoveSerial++
+        scope.launch {
+            var velocityY = initialVelocityY.coerceIn(-3200f, 3200f)
+            var lastFrameNanos = withFrameNanos { it }
+            while (generation == oneHandFlingGeneration && kotlin.math.abs(velocityY) > 30f) {
+                val frameNanos = withFrameNanos { it }
+                val deltaSeconds = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.04f)
+                lastFrameNanos = frameNanos
+                val nextOffset = (oneHandOffsetPx + velocityY * deltaSeconds).coerceIn(0f, oneHandMaxOffsetPx)
+                if (nextOffset == oneHandOffsetPx) break
+                oneHandOffsetPx = nextOffset
+                velocityY *= 0.90f
+            }
+        }
+    }
+
     Box(
         Modifier
             .fillMaxSize()
@@ -686,8 +667,8 @@ private fun MemoDetailScreen(
                     .fillMaxWidth()
                     .height(oneHandBackdropHeight)
                     .graphicsLayer {
-                        alpha = (0.25f + (oneHandOffsetPx / oneHandMaxOffsetPx.coerceAtLeast(1f)) * 0.5f)
-                            .coerceIn(0.25f, 0.75f)
+                        alpha = (0.42f + (oneHandOffsetPx / oneHandMaxOffsetPx.coerceAtLeast(1f)) * 0.46f)
+                            .coerceIn(0.42f, 0.88f)
                     }
             )
         }
@@ -700,8 +681,11 @@ private fun MemoDetailScreen(
                     if (!oneHandModeEnabled || itemDragActive) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        oneHandFlingGeneration++
+                        val listAtTopWhenGestureStarted = latestCurrentListAtTop
                         var totalX = 0f
                         var totalY = 0f
+                        var lastVelocityY = 0f
                         var movedContentInGesture = false
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
@@ -711,12 +695,14 @@ private fun MemoDetailScreen(
                             totalX += delta.x
                             totalY += delta.y
                             val verticalGesture = kotlin.math.abs(totalY) > kotlin.math.abs(totalX) * 1.15f
-                            val canPullDown = delta.y > 0f && oneHandOffsetPx < oneHandMaxOffsetPx && latestCurrentListAtTop
+                            val canPullDown = delta.y > 0f && oneHandOffsetPx < oneHandMaxOffsetPx && listAtTopWhenGestureStarted
                             val canPushUp = delta.y < 0f && oneHandOffsetPx > 0f
                             if (verticalGesture && (canPullDown || canPushUp)) {
-                                val nextOffset = (oneHandOffsetPx + delta.y).coerceIn(0f, oneHandMaxOffsetPx)
+                                val boostedDeltaY = delta.y * OneHandScrollSpeedMultiplier
+                                val nextOffset = (oneHandOffsetPx + boostedDeltaY).coerceIn(0f, oneHandMaxOffsetPx)
                                 if (nextOffset != oneHandOffsetPx) {
                                     oneHandOffsetPx = nextOffset
+                                    lastVelocityY = boostedDeltaY * 60f
                                     if (!movedContentInGesture) {
                                         oneHandMoveSerial++
                                         movedContentInGesture = true
@@ -724,6 +710,9 @@ private fun MemoDetailScreen(
                                     change.consume()
                                 }
                             }
+                        }
+                        if (movedContentInGesture) {
+                            startOneHandFling(lastVelocityY)
                         }
                     }
                 }
@@ -767,13 +756,21 @@ private fun MemoDetailScreen(
                     }
                 )
                 if (pagerState.currentPage == 1 && memo.deletedEntries.isNotEmpty()) {
-                    TextButton(
+                    Button(
                         onClick = {
                             memo.deletedEntries.clear()
                             onChanged()
-                        }
+                        },
+                        modifier = Modifier.height(36.dp),
+                        shape = RoundedCornerShape(18.dp),
+                        border = BorderStroke(1.dp, Color(0xFFD32F2F)),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFFFEBEE),
+                            contentColor = Color(0xFFD32F2F)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                     ) {
-                        Text("全消去", color = Color(0xFFD32F2F))
+                        Text("全消去", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
