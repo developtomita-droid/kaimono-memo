@@ -71,6 +71,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -79,11 +80,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -162,6 +165,41 @@ private val TrashTabSelectedColor = Color(0xFFE91E63)
 
 private fun isTemporaryMemo(memo: ShoppingMemo): Boolean = memo.id == TemporaryMemoId
 
+@Composable
+private fun rememberSparkleAlpha(active: Boolean): Float {
+    val transition = rememberInfiniteTransition(label = "sparkle")
+    val alpha by transition.animateFloat(
+        initialValue = if (active) 0.25f else 0f,
+        targetValue = if (active) 1f else 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "sparkle-alpha"
+    )
+    return if (active) alpha else 0f
+}
+
+private fun Modifier.sparkleOverlay(alpha: Float): Modifier {
+    if (alpha <= 0f) return this
+    return drawWithContent {
+        drawContent()
+        val sparkleColor = Color(0xFFFFC107).copy(alpha = alpha)
+        val glowColor = Color(0xFFFFF59D).copy(alpha = alpha * 0.55f)
+        val r = 3.5f
+        val points = listOf(
+            Offset(size.width * 0.08f, size.height * 0.12f),
+            Offset(size.width * 0.94f, size.height * 0.18f),
+            Offset(size.width * 0.11f, size.height * 0.86f),
+            Offset(size.width * 0.88f, size.height * 0.82f)
+        )
+        points.forEachIndexed { index, point ->
+            drawCircle(glowColor, radius = r * 2.2f, center = point)
+            drawCircle(sparkleColor, radius = r + index % 2, center = point)
+        }
+    }
+}
+
 private fun pruneBlankEntries(memo: ShoppingMemo) {
     memo.entries.removeAll { it.name.isBlank() }
     memo.deletedEntries.removeAll { it.name.isBlank() }
@@ -213,6 +251,7 @@ fun ShoppingMemoApp() {
     var selectedMemoId by remember { mutableStateOf<String?>(null) }
     var oneHandModeEnabled by remember { mutableStateOf(loadOneHandModeEnabled(context)) }
     var simpleModeEnabled by remember { mutableStateOf(loadSimpleModeEnabled(context)) }
+    val recentlyMovedEntryIds = remember { mutableStateListOf<String>() }
     val selectedMemo = memos.firstOrNull { it.id == selectedMemoId }
     val temporaryMemo = memos.first { it.id == TemporaryMemoId }
     val normalMemos = memos.filterNot(::isTemporaryMemo)
@@ -241,6 +280,7 @@ fun ShoppingMemoApp() {
             } else {
                 assignDefaultTitleIfBlank(memo, memos)
             }
+            recentlyMovedEntryIds.removeAll { id -> memo.entries.any { it.id == id } }
         }
         persist()
         currentScreen = Screen.Home
@@ -286,6 +326,11 @@ fun ShoppingMemoApp() {
                     onAddMemo = ::addMemo,
                     onOpenMemo = ::openMemo,
                     onOpenTemporaryMemo = { openMemo(temporaryMemo) },
+                    onTemporaryEntryMoved = { targetMemo, entry ->
+                        recentlyMovedEntryIds.remove(entry.id)
+                        recentlyMovedEntryIds.add(entry.id)
+                        persist()
+                    },
                     onDeleteMemo = {
                         if (!isTemporaryMemo(it)) memos.remove(it)
                         persist()
@@ -302,6 +347,7 @@ fun ShoppingMemoApp() {
                         MemoDetailScreen(
                             memo = selectedMemo,
                             oneHandModeEnabled = oneHandModeEnabled,
+                            recentlyMovedEntryIds = recentlyMovedEntryIds.toSet(),
                             onFinish = ::finishDetail,
                             onChanged = ::persist
                         )
@@ -335,16 +381,47 @@ private fun HomeScreen(
     onAddMemo: () -> Unit,
     onOpenMemo: (ShoppingMemo) -> Unit,
     onOpenTemporaryMemo: () -> Unit,
+    onTemporaryEntryMoved: (ShoppingMemo, ShoppingEntry) -> Unit,
     onDeleteMemo: (ShoppingMemo) -> Unit,
     onToggleFavorite: (ShoppingMemo) -> Unit
 ) {
+    val scope = rememberCoroutineScope()
+    val memoCardBounds = remember { mutableStateMapOf<String, Rect>() }
+    val sparklingMemoIds = remember { mutableStateListOf<String>() }
     var draggingId by remember { mutableStateOf<String?>(null) }
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
     var dragPoint by remember { mutableStateOf(Offset.Zero) }
     var draggedCardBounds by remember { mutableStateOf<Rect?>(null) }
     var trashBounds by remember { mutableStateOf<Rect?>(null) }
     var pendingDelete by remember { mutableStateOf<ShoppingMemo?>(null) }
+    var homeBounds by remember { mutableStateOf<Rect?>(null) }
+    var draggingTemporaryEntry by remember { mutableStateOf<ShoppingEntry?>(null) }
+    var temporaryDragPoint by remember { mutableStateOf(Offset.Zero) }
 
+    fun moveTemporaryEntryTo(targetMemo: ShoppingMemo, entry: ShoppingEntry) {
+        temporaryMemo.entries.remove(entry)
+        val insertIndex = if (entry.checked) {
+            targetMemo.entries.size
+        } else {
+            targetMemo.entries.indexOfFirst { it.name.isBlank() || it.checked }.let { if (it >= 0) it else targetMemo.entries.size }
+        }
+        targetMemo.entries.add(insertIndex, entry)
+        ensureDisplayBlankEntry(temporaryMemo)
+        ensureDisplayBlankEntry(targetMemo)
+        onTemporaryEntryMoved(targetMemo, entry)
+        sparklingMemoIds.remove(targetMemo.id)
+        sparklingMemoIds.add(targetMemo.id)
+        scope.launch {
+            delay(5000)
+            sparklingMemoIds.remove(targetMemo.id)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { homeBounds = it.boundsInWindow() }
+    ) {
     Column(Modifier.fillMaxSize()) {
         Header(
             title = "買い物メモ",
@@ -386,6 +463,7 @@ private fun HomeScreen(
                         val isDragging = draggingId == memo.id
                         MemoCard(
                             memo = memo,
+                            sparkling = sparklingMemoIds.contains(memo.id),
                             modifier = Modifier
                                 .graphicsLayer {
                                     translationX = if (isDragging) dragOffset.x else 0f
@@ -395,7 +473,9 @@ private fun HomeScreen(
                                     shadowElevation = if (isDragging) 18f else 0f
                                 }
                                 .onGloballyPositioned {
-                                    if (isDragging || draggingId == null) draggedCardBounds = it.boundsInWindow()
+                                    val bounds = it.boundsInWindow()
+                                    memoCardBounds[memo.id] = bounds
+                                    if (isDragging || draggingId == null) draggedCardBounds = bounds
                                 }
                                 .pointerInput(memo.id) {
                                     detectDragGesturesAfterLongPress(
@@ -443,11 +523,43 @@ private fun HomeScreen(
             )
             TemporaryMemoPanel(
                 memo = temporaryMemo,
+                draggingEntryId = draggingTemporaryEntry?.id,
                 modifier = Modifier
                     .padding(start = 6.dp)
-                    .width(136.dp)
+                    .weight(1f)
                     .fillMaxHeight(),
-                onOpen = onOpenTemporaryMemo
+                onOpen = onOpenTemporaryMemo,
+                onDragStart = { entry, start, bounds ->
+                    draggingTemporaryEntry = entry
+                    temporaryDragPoint = if (bounds == null) start else Offset(bounds.left + start.x, bounds.top + start.y)
+                },
+                onDrag = { delta ->
+                    temporaryDragPoint += delta
+                },
+                onDragEnd = {
+                    val entry = draggingTemporaryEntry
+                    val target = memos.firstOrNull { memo ->
+                        memoCardBounds[memo.id]?.contains(temporaryDragPoint) == true
+                    }
+                    if (entry != null && target != null) {
+                        moveTemporaryEntryTo(target, entry)
+                    }
+                    draggingTemporaryEntry = null
+                },
+                onDragCancel = {
+                    draggingTemporaryEntry = null
+                }
+            )
+        }
+    }
+        draggingTemporaryEntry?.let { entry ->
+            TemporaryFloatingEntry(
+                entry = entry,
+                position = Offset(
+                    x = temporaryDragPoint.x - (homeBounds?.left ?: 0f) - 84f,
+                    y = temporaryDragPoint.y - (homeBounds?.top ?: 0f) - 28f
+                ),
+                modifier = Modifier.zIndex(10f)
             )
         }
     }
@@ -473,8 +585,13 @@ private fun HomeScreen(
 @Composable
 private fun TemporaryMemoPanel(
     memo: ShoppingMemo,
+    draggingEntryId: String?,
     modifier: Modifier = Modifier,
-    onOpen: () -> Unit
+    onOpen: () -> Unit,
+    onDragStart: (ShoppingEntry, Offset, Rect?) -> Unit,
+    onDrag: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit
 ) {
     val activeEntries = memo.entries.filter { !it.checked && it.name.isNotBlank() }
     val doneEntries = memo.entries.filter { it.checked && it.name.isNotBlank() }
@@ -518,7 +635,15 @@ private fun TemporaryMemoPanel(
                     }
                 } else {
                     items(activeEntries, key = { "temporary-active-${it.id}" }) { entry ->
-                        TemporaryPreviewEntry(entry = entry, done = false)
+                        TemporaryPreviewEntry(
+                            entry = entry,
+                            done = false,
+                            isDragging = draggingEntryId == entry.id,
+                            onDragStart = onDragStart,
+                            onDrag = onDrag,
+                            onDragEnd = onDragEnd,
+                            onDragCancel = onDragCancel
+                        )
                     }
                     if (doneEntries.isNotEmpty()) {
                         item {
@@ -526,7 +651,15 @@ private fun TemporaryMemoPanel(
                         }
                     }
                     items(doneEntries, key = { "temporary-done-${it.id}" }) { entry ->
-                        TemporaryPreviewEntry(entry = entry, done = true)
+                        TemporaryPreviewEntry(
+                            entry = entry,
+                            done = true,
+                            isDragging = draggingEntryId == entry.id,
+                            onDragStart = onDragStart,
+                            onDrag = onDrag,
+                            onDragEnd = onDragEnd,
+                            onDragCancel = onDragCancel
+                        )
                     }
                 }
             }
@@ -573,9 +706,71 @@ private fun HomeFixedActionButton(
 }
 
 @Composable
-private fun TemporaryPreviewEntry(entry: ShoppingEntry, done: Boolean) {
+private fun TemporaryFloatingEntry(
+    entry: ShoppingEntry,
+    position: Offset,
+    modifier: Modifier = Modifier
+) {
+    val sparkleAlpha = rememberSparkleAlpha(true)
+    Surface(
+        modifier = modifier
+            .graphicsLayer {
+                translationX = position.x
+                translationY = position.y
+                shadowElevation = 18f
+            }
+            .width(180.dp)
+            .sparkleOverlay(sparkleAlpha),
+        shape = RoundedCornerShape(8.dp),
+        color = Color.White,
+        border = BorderStroke(1.dp, Color(0xFFFFD54F))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("・", color = Color(0xFFD32F2F), fontSize = 18.sp)
+            Text(
+                text = entry.name,
+                color = if (entry.checked) Color(0xFF777777) else Color.Black,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun TemporaryPreviewEntry(
+    entry: ShoppingEntry,
+    done: Boolean,
+    isDragging: Boolean,
+    onDragStart: (ShoppingEntry, Offset, Rect?) -> Unit,
+    onDrag: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit
+) {
+    var rowBounds by remember { mutableStateOf<Rect?>(null) }
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer { alpha = if (isDragging) 0.35f else 1f }
+            .onGloballyPositioned { rowBounds = it.boundsInWindow() }
+            .pointerInput(entry.id) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { start -> onDragStart(entry, start, rowBounds) },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        onDrag(amount)
+                    },
+                    onDragEnd = onDragEnd,
+                    onDragCancel = onDragCancel
+                )
+            },
         verticalAlignment = Alignment.Top
     ) {
         Text("・", color = Color(0xFF777777), fontSize = 13.sp)
@@ -596,16 +791,19 @@ private fun TemporaryPreviewEntry(entry: ShoppingEntry, done: Boolean) {
 private fun MemoCard(
     memo: ShoppingMemo,
     modifier: Modifier = Modifier,
+    sparkling: Boolean = false,
     onClick: () -> Unit,
     onToggleFavorite: () -> Unit
 ) {
     val activeCount = memo.entries.count { !it.checked && it.name.isNotBlank() }
     val doneCount = memo.entries.count { it.checked }
+    val sparkleAlpha = rememberSparkleAlpha(sparkling)
     Card(
         modifier = modifier
             .fillMaxWidth()
             .height(300.dp)
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .sparkleOverlay(sparkleAlpha),
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
         border = BorderStroke(1.dp, Color(0xFFC8C8C8)),
@@ -701,6 +899,7 @@ private fun OneHandModeBackdrop(modifier: Modifier = Modifier) {
 private fun MemoDetailScreen(
     memo: ShoppingMemo,
     oneHandModeEnabled: Boolean,
+    recentlyMovedEntryIds: Set<String>,
     onFinish: () -> Unit,
     onChanged: () -> Unit
 ) {
@@ -1039,6 +1238,7 @@ private fun MemoDetailScreen(
                         onItemDragActiveChange = { itemDragActive = it },
                         onListAtTopChanged = { activeListAtTop = it },
                         editTapSuppressionSerial = oneHandMoveSerial,
+                        recentlyMovedEntryIds = recentlyMovedEntryIds,
                         onChanged = onChanged
                     )
                 } else {
@@ -1107,6 +1307,7 @@ private fun ActiveItemsPage(
     onItemDragActiveChange: (Boolean) -> Unit,
     onListAtTopChanged: (Boolean) -> Unit,
     editTapSuppressionSerial: Int,
+    recentlyMovedEntryIds: Set<String>,
     onChanged: () -> Unit
 ) {
     val density = LocalDensity.current
@@ -1657,6 +1858,7 @@ private fun ActiveItemsPage(
                 isDeleteSwiping = deleteSwipeEntryId == entry.id,
                 deleteSwipeOffsetX = if (deleteSwipeEntryId == entry.id) deleteSwipeOffsetX else 0f,
                 editTapSuppressionSerial = editTapSuppressionSerial,
+                recentlyMoved = recentlyMovedEntryIds.contains(entry.id),
                 modifier = if (draggingEntryId == entry.id) {
                     Modifier.zIndex(1f)
                 } else if (deleteSwipeEntryId == entry.id) {
@@ -1743,6 +1945,7 @@ private fun ActiveItemsPage(
                     dragOffsetY = if (draggingEntryId == entry.id) draggingOffsetY else 0f,
                     isDeleteSwiping = deleteSwipeEntryId == entry.id,
                     deleteSwipeOffsetX = if (deleteSwipeEntryId == entry.id) deleteSwipeOffsetX else 0f,
+                    recentlyMoved = recentlyMovedEntryIds.contains(entry.id),
                     modifier = if (draggingEntryId == entry.id || deleteSwipeEntryId == entry.id) {
                         Modifier.zIndex(1f)
                     } else {
@@ -1914,6 +2117,7 @@ private fun ShoppingEntryRow(
     isDeleteSwiping: Boolean,
     deleteSwipeOffsetX: Float,
     editTapSuppressionSerial: Int,
+    recentlyMoved: Boolean,
     modifier: Modifier = Modifier,
     onSelect: () -> Unit,
     onPressStarted: () -> Unit,
@@ -1939,6 +2143,7 @@ private fun ShoppingEntryRow(
     var pendingTapPosition by remember(entry.id) { mutableStateOf<Offset?>(null) }
     var textFocused by remember(entry.id) { mutableStateOf(false) }
     val rowBackground = if (selected) focusedEntryBackground() else entryColorMarkBackground(entry.colorMark)
+    val moveSparkleAlpha = rememberSparkleAlpha(recentlyMoved)
     val rowSwipeModifier = swipeToTrashModifier(
         key = entry.id,
         enabled = canDrag,
@@ -1985,7 +2190,7 @@ private fun ShoppingEntryRow(
                 scaleY = if (isDragging || isDeleteSwiping) 1.02f else 1f
                 shadowElevation = if (isDragging || isDeleteSwiping) 16f else 0f
             }
-            .background(rowBackground)
+            .recentMoveBackground(recentlyMoved, rowBackground, moveSparkleAlpha)
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2058,6 +2263,22 @@ private fun focusedEntryBackground(): Color {
     return Color(0xFFFFF8D8)
 }
 
+private fun Modifier.recentMoveBackground(active: Boolean, normalColor: Color, sparkleAlpha: Float): Modifier {
+    return if (active) {
+        background(
+            Brush.horizontalGradient(
+                colors = listOf(
+                    Color(0xFFFFFDE7),
+                    Color(0xFFFFF59D),
+                    Color(0xFFFFFDE7)
+                )
+            )
+        ).sparkleOverlay(sparkleAlpha)
+    } else {
+        background(normalColor)
+    }
+}
+
 @Composable
 private fun NumberHandle(displayNumber: Int?, modifier: Modifier = Modifier, onClick: () -> Unit = {}) {
     Box(
@@ -2091,12 +2312,14 @@ private fun DoneEntryRow(
     dragOffsetY: Float,
     isDeleteSwiping: Boolean,
     deleteSwipeOffsetX: Float,
+    recentlyMoved: Boolean,
     modifier: Modifier = Modifier,
     onRestore: () -> Unit,
     onDeleteSwipeStart: () -> Unit,
     onDeleteSwipeDrag: (Float, Float) -> Unit,
     onDeleteSwipeEnd: () -> Unit
 ) {
+    val moveSparkleAlpha = rememberSparkleAlpha(recentlyMoved)
     val swipeModifier = swipeToTrashModifier(
         key = "done-${entry.id}",
         enabled = entry.name.isNotBlank(),
@@ -2114,7 +2337,7 @@ private fun DoneEntryRow(
                 scaleY = if (isDragging || isDeleteSwiping) 1.02f else 1f
                 shadowElevation = if (isDragging || isDeleteSwiping) 16f else 0f
             }
-            .background(Color.White)
+            .recentMoveBackground(recentlyMoved, Color.White, moveSparkleAlpha)
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
