@@ -11,6 +11,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -86,12 +87,16 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -421,6 +426,7 @@ fun ShoppingMemoApp() {
                     } else {
                         PatternPickerScreen(
                             memo = imageEditingMemo,
+                            oneHandModeEnabled = oneHandModeEnabled,
                             onBack = { currentScreen = Screen.Home },
                             onSelect = { pattern ->
                                 imageEditingMemo.imagePattern = pattern
@@ -1698,31 +1704,202 @@ private fun activeShoppingImagePatterns(): List<ShoppingImagePattern> {
     )
 }
 
+private enum class ShoppingVisualKind {
+    Food,
+    Cart,
+    Appliance,
+    Game,
+    Restaurant,
+    Clothing,
+    Sports,
+    Service,
+    HundredYenShop,
+    DailyGoods
+}
+
+private data class ShoppingVisualPattern(
+    val name: String,
+    val kind: ShoppingVisualKind,
+    val background: Color,
+    val accent: Color
+)
+
+private fun activeShoppingVisualPatterns(): List<ShoppingVisualPattern> {
+    return listOf(
+        ShoppingVisualPattern("食料品", ShoppingVisualKind.Food, Color(0xFFE8F5E9), Color(0xFF2E7D32)),
+        ShoppingVisualPattern("カート", ShoppingVisualKind.Cart, Color(0xFFFFEBEE), Color(0xFFD32F2F)),
+        ShoppingVisualPattern("家電", ShoppingVisualKind.Appliance, Color(0xFFE3F2FD), Color(0xFF1565C0)),
+        ShoppingVisualPattern("ゲーム", ShoppingVisualKind.Game, Color(0xFFEDE7F6), Color(0xFF512DA8)),
+        ShoppingVisualPattern("レストラン", ShoppingVisualKind.Restaurant, Color(0xFFFFF8E1), Color(0xFFF57F17)),
+        ShoppingVisualPattern("衣類", ShoppingVisualKind.Clothing, Color(0xFFFCE4EC), Color(0xFFC2185B)),
+        ShoppingVisualPattern("スポーツ用品", ShoppingVisualKind.Sports, Color(0xFFE0F2F1), Color(0xFF00796B)),
+        ShoppingVisualPattern("サービス業", ShoppingVisualKind.Service, Color(0xFFFFFDE7), Color(0xFFF9A825)),
+        ShoppingVisualPattern("100均一", ShoppingVisualKind.HundredYenShop, Color(0xFFFFF3E0), Color(0xFFD32F2F)),
+        ShoppingVisualPattern("日用品", ShoppingVisualKind.DailyGoods, Color(0xFFE0F7FA), Color(0xFF00838F))
+    )
+}
+
 @Composable
 private fun ShoppingPatternImage(pattern: Int, modifier: Modifier = Modifier) {
-    val patterns = activeShoppingImagePatterns()
+    val patterns = activeShoppingVisualPatterns()
     val item = patterns[((pattern % patterns.size) + patterns.size) % patterns.size]
+    ReadableShoppingPatternImage(item = item, modifier = modifier)
+    return
     Box(
         modifier = modifier
             .background(item.background, RoundedCornerShape(0.dp))
-            .padding(4.dp),
-        contentAlignment = Alignment.Center
+            .padding(4.dp)
     ) {
-        Text(
-            text = item.symbol,
-            fontSize = if (item.symbol.contains('\n')) 36.sp else 86.sp,
-            lineHeight = 40.sp
-        )
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val u = kotlin.math.min(w, h)
+            fun sx(v: Float) = w * v
+            fun sy(v: Float) = h * v
+            fun stroke(width: Float = 0.045f) = Stroke(width = u * width)
+
+            when (item.kind) {
+                ShoppingVisualKind.Food -> {
+                    drawRoundRect(
+                        color = Color(0xFFD7CCC8),
+                        topLeft = Offset(sx(0.20f), sy(0.50f)),
+                        size = Size(sx(0.60f), sy(0.24f)),
+                        cornerRadius = CornerRadius(u * 0.08f, u * 0.08f),
+                        style = stroke(0.045f)
+                    )
+                    drawLine(Color(0xFF8D6E63), Offset(sx(0.27f), sy(0.58f)), Offset(sx(0.73f), sy(0.58f)), strokeWidth = u * 0.03f)
+                    drawCircle(Color(0xFFE53935), radius = u * 0.12f, center = Offset(sx(0.36f), sy(0.42f)))
+                    drawCircle(Color(0xFF43A047), radius = u * 0.045f, center = Offset(sx(0.43f), sy(0.32f)))
+                    drawOval(Color(0xFF1E88E5), topLeft = Offset(sx(0.50f), sy(0.34f)), size = Size(sx(0.25f), sy(0.14f)))
+                    val tail = Path().apply {
+                        moveTo(sx(0.73f), sy(0.41f))
+                        lineTo(sx(0.84f), sy(0.32f))
+                        lineTo(sx(0.84f), sy(0.50f))
+                        close()
+                    }
+                    drawPath(tail, Color(0xFF1976D2))
+                    if (Locale.getDefault().language == Locale.JAPANESE.language) {
+                        drawOval(Color.White, topLeft = Offset(sx(0.43f), sy(0.47f)), size = Size(sx(0.22f), sy(0.13f)))
+                        drawRoundRect(Color(0xFF90A4AE), Offset(sx(0.42f), sy(0.56f)), Size(sx(0.24f), sy(0.07f)), CornerRadius(u * 0.03f, u * 0.03f))
+                    } else {
+                        drawRoundRect(Color(0xFFFFB74D), Offset(sx(0.42f), sy(0.47f)), Size(sx(0.24f), sy(0.13f)), CornerRadius(u * 0.04f, u * 0.04f))
+                    }
+                }
+                ShoppingVisualKind.Cart -> {
+                    drawLine(item.accent, Offset(sx(0.24f), sy(0.35f)), Offset(sx(0.74f), sy(0.35f)), strokeWidth = u * 0.045f)
+                    drawLine(item.accent, Offset(sx(0.30f), sy(0.35f)), Offset(sx(0.36f), sy(0.62f)), strokeWidth = u * 0.04f)
+                    drawLine(item.accent, Offset(sx(0.74f), sy(0.35f)), Offset(sx(0.65f), sy(0.62f)), strokeWidth = u * 0.04f)
+                    drawLine(item.accent, Offset(sx(0.34f), sy(0.62f)), Offset(sx(0.68f), sy(0.62f)), strokeWidth = u * 0.04f)
+                    drawLine(item.accent, Offset(sx(0.72f), sy(0.35f)), Offset(sx(0.85f), sy(0.24f)), strokeWidth = u * 0.04f)
+                    listOf(0.43f, 0.54f, 0.65f).forEach { x ->
+                        drawLine(item.accent.copy(alpha = 0.65f), Offset(sx(x), sy(0.38f)), Offset(sx(x - 0.03f), sy(0.59f)), strokeWidth = u * 0.02f)
+                    }
+                    drawCircle(Color(0xFF455A64), radius = u * 0.055f, center = Offset(sx(0.40f), sy(0.73f)))
+                    drawCircle(Color(0xFF455A64), radius = u * 0.055f, center = Offset(sx(0.66f), sy(0.73f)))
+                    drawCircle(Color.White, radius = u * 0.027f, center = Offset(sx(0.40f), sy(0.73f)))
+                    drawCircle(Color.White, radius = u * 0.027f, center = Offset(sx(0.66f), sy(0.73f)))
+                }
+                ShoppingVisualKind.Appliance -> {
+                    drawRoundRect(Color.White, Offset(sx(0.30f), sy(0.18f)), Size(sx(0.42f), sy(0.66f)), CornerRadius(u * 0.06f, u * 0.06f))
+                    drawRoundRect(item.accent, Offset(sx(0.30f), sy(0.18f)), Size(sx(0.42f), sy(0.66f)), CornerRadius(u * 0.06f, u * 0.06f), style = stroke(0.04f))
+                    drawLine(item.accent, Offset(sx(0.31f), sy(0.43f)), Offset(sx(0.71f), sy(0.43f)), strokeWidth = u * 0.035f)
+                    drawLine(item.accent, Offset(sx(0.62f), sy(0.28f)), Offset(sx(0.62f), sy(0.38f)), strokeWidth = u * 0.025f)
+                    drawLine(item.accent, Offset(sx(0.62f), sy(0.52f)), Offset(sx(0.62f), sy(0.70f)), strokeWidth = u * 0.025f)
+                }
+                ShoppingVisualKind.Game -> {
+                    drawRoundRect(Color(0xFF673AB7), Offset(sx(0.20f), sy(0.38f)), Size(sx(0.60f), sy(0.27f)), CornerRadius(u * 0.13f, u * 0.13f))
+                    drawCircle(Color(0xFF512DA8), radius = u * 0.13f, center = Offset(sx(0.30f), sy(0.52f)))
+                    drawCircle(Color(0xFF512DA8), radius = u * 0.13f, center = Offset(sx(0.70f), sy(0.52f)))
+                    drawLine(Color.White, Offset(sx(0.27f), sy(0.52f)), Offset(sx(0.39f), sy(0.52f)), strokeWidth = u * 0.025f)
+                    drawLine(Color.White, Offset(sx(0.33f), sy(0.46f)), Offset(sx(0.33f), sy(0.58f)), strokeWidth = u * 0.025f)
+                    drawCircle(Color(0xFFFFEB3B), radius = u * 0.035f, center = Offset(sx(0.67f), sy(0.48f)))
+                    drawCircle(Color(0xFF4CAF50), radius = u * 0.035f, center = Offset(sx(0.73f), sy(0.56f)))
+                }
+                ShoppingVisualKind.Restaurant -> {
+                    drawOval(Color.White, Offset(sx(0.15f), sy(0.50f)), Size(sx(0.70f), sy(0.20f)))
+                    drawOval(Color(0xFFFFCA28), Offset(sx(0.22f), sy(0.34f)), Size(sx(0.56f), sy(0.30f)))
+                    drawLine(Color(0xFFE53935), Offset(sx(0.36f), sy(0.48f)), Offset(sx(0.65f), sy(0.42f)), strokeWidth = u * 0.045f)
+                    drawCircle(Color(0xFFEF5350), radius = u * 0.03f, center = Offset(sx(0.50f), sy(0.45f)))
+                }
+                ShoppingVisualKind.Clothing -> {
+                    val shirt = Path().apply {
+                        moveTo(sx(0.30f), sy(0.30f))
+                        lineTo(sx(0.43f), sy(0.22f))
+                        lineTo(sx(0.50f), sy(0.32f))
+                        lineTo(sx(0.57f), sy(0.22f))
+                        lineTo(sx(0.70f), sy(0.30f))
+                        lineTo(sx(0.78f), sy(0.47f))
+                        lineTo(sx(0.65f), sy(0.53f))
+                        lineTo(sx(0.65f), sy(0.78f))
+                        lineTo(sx(0.35f), sy(0.78f))
+                        lineTo(sx(0.35f), sy(0.53f))
+                        lineTo(sx(0.22f), sy(0.47f))
+                        close()
+                    }
+                    drawPath(shirt, item.accent)
+                    drawRoundRect(Color.White.copy(alpha = 0.32f), Offset(sx(0.39f), sy(0.40f)), Size(sx(0.22f), sy(0.25f)), CornerRadius(u * 0.03f, u * 0.03f))
+                }
+                ShoppingVisualKind.Sports -> {
+                    drawOval(Color(0xFFB2DFDB), Offset(sx(0.26f), sy(0.18f)), Size(sx(0.35f), sy(0.42f)), style = stroke(0.045f))
+                    drawLine(item.accent, Offset(sx(0.52f), sy(0.55f)), Offset(sx(0.75f), sy(0.78f)), strokeWidth = u * 0.05f)
+                    drawLine(Color.White.copy(alpha = 0.75f), Offset(sx(0.34f), sy(0.24f)), Offset(sx(0.51f), sy(0.53f)), strokeWidth = u * 0.013f)
+                    drawLine(Color.White.copy(alpha = 0.75f), Offset(sx(0.28f), sy(0.38f)), Offset(sx(0.58f), sy(0.38f)), strokeWidth = u * 0.013f)
+                    drawCircle(Color(0xFFFFF176), radius = u * 0.08f, center = Offset(sx(0.70f), sy(0.28f)))
+                }
+                ShoppingVisualKind.Service -> {
+                    drawCircle(Color(0xFFFFCC80), radius = u * 0.12f, center = Offset(sx(0.50f), sy(0.28f)))
+                    drawRoundRect(item.accent, Offset(sx(0.34f), sy(0.45f)), Size(sx(0.32f), sy(0.28f)), CornerRadius(u * 0.10f, u * 0.10f))
+                    drawLine(Color(0xFF6D4C41), Offset(sx(0.38f), sy(0.38f)), Offset(sx(0.62f), sy(0.38f)), strokeWidth = u * 0.035f)
+                    drawLine(item.accent, Offset(sx(0.35f), sy(0.53f)), Offset(sx(0.20f), sy(0.66f)), strokeWidth = u * 0.035f)
+                    drawLine(item.accent, Offset(sx(0.65f), sy(0.53f)), Offset(sx(0.80f), sy(0.66f)), strokeWidth = u * 0.035f)
+                }
+                ShoppingVisualKind.HundredYenShop -> {
+                    drawRoundRect(Color.White, Offset(sx(0.22f), sy(0.40f)), Size(sx(0.56f), sy(0.40f)), CornerRadius(u * 0.02f, u * 0.02f))
+                    drawRoundRect(item.accent, Offset(sx(0.18f), sy(0.20f)), Size(sx(0.64f), sy(0.18f)), CornerRadius(u * 0.04f, u * 0.04f))
+                    val stripeWidth = sx(0.64f) / 5f
+                    repeat(5) { index ->
+                        val color = if (index % 2 == 0) item.accent else Color.White
+                        drawRoundRect(color, Offset(sx(0.18f) + stripeWidth * index, sy(0.36f)), Size(stripeWidth, sy(0.16f)), CornerRadius(u * 0.025f, u * 0.025f))
+                    }
+                    drawLine(Color(0xFF90CAF9), Offset(sx(0.32f), sy(0.53f)), Offset(sx(0.32f), sy(0.78f)), strokeWidth = u * 0.02f)
+                    drawLine(Color(0xFF90CAF9), Offset(sx(0.68f), sy(0.53f)), Offset(sx(0.68f), sy(0.78f)), strokeWidth = u * 0.02f)
+                    drawRoundRect(Color(0xFFBBDEFB), Offset(sx(0.34f), sy(0.54f)), Size(sx(0.32f), sy(0.25f)), CornerRadius(u * 0.02f, u * 0.02f))
+                }
+                ShoppingVisualKind.DailyGoods -> {
+                    drawRoundRect(Color(0xFF4DD0E1), Offset(sx(0.34f), sy(0.32f)), Size(sx(0.32f), sy(0.44f)), CornerRadius(u * 0.08f, u * 0.08f))
+                    drawRoundRect(Color(0xFF0097A7), Offset(sx(0.42f), sy(0.22f)), Size(sx(0.16f), sy(0.10f)), CornerRadius(u * 0.025f, u * 0.025f))
+                    drawLine(Color(0xFF006064), Offset(sx(0.48f), sy(0.20f)), Offset(sx(0.68f), sy(0.20f)), strokeWidth = u * 0.035f)
+                    drawOval(Color.White, Offset(sx(0.43f), sy(0.47f)), Size(sx(0.14f), sy(0.20f)))
+                }
+            }
+        }
+        if (item.kind == ShoppingVisualKind.HundredYenShop && Locale.getDefault().language == Locale.JAPANESE.language) {
+            Text(
+                text = "100",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp)
+            )
+        }
     }
 }
 
 @Composable
 private fun PatternPickerScreen(
     memo: ShoppingMemo,
+    oneHandModeEnabled: Boolean,
     onBack: () -> Unit,
     onSelect: (Int) -> Unit
 ) {
-    val patterns = activeShoppingImagePatterns()
+    val patterns = activeShoppingVisualPatterns()
+    PatternPickerGridScreen(
+        memo = memo,
+        patterns = patterns,
+        oneHandModeEnabled = oneHandModeEnabled,
+        onSelect = onSelect
+    )
+    return
     Column(Modifier.fillMaxSize()) {
         Header(
             title = "画像パターン",
@@ -1771,6 +1948,437 @@ private fun PatternPickerScreen(
                     ) {
                         ShoppingPatternImage(pattern = index, modifier = Modifier.fillMaxSize())
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReadableShoppingPatternImage(
+    item: ShoppingVisualPattern,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .background(item.background, RoundedCornerShape(0.dp))
+            .padding(6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        when (item.kind) {
+            ShoppingVisualKind.Food -> GroceryBasketPatternIcon(item.accent, Modifier.fillMaxSize())
+            ShoppingVisualKind.Cart -> Text("🛒", fontSize = 72.sp)
+            ShoppingVisualKind.Appliance -> TvPatternIcon(item.accent, Modifier.fillMaxSize())
+            ShoppingVisualKind.Game -> Text("🎮", fontSize = 72.sp)
+            ShoppingVisualKind.Restaurant -> OmuricePatternIcon(item.accent, Modifier.fillMaxSize())
+            ShoppingVisualKind.Clothing -> Text("👕", fontSize = 72.sp)
+            ShoppingVisualKind.Sports -> Text("🎾", fontSize = 72.sp)
+            ShoppingVisualKind.Service -> ServiceStaffPatternIcon(item.accent, Modifier.fillMaxSize())
+            ShoppingVisualKind.HundredYenShop -> HundredYenShopStorePatternIcon(Modifier.fillMaxSize())
+            ShoppingVisualKind.DailyGoods -> Text("🧴", fontSize = 72.sp)
+        }
+    }
+}
+
+@Composable
+private fun GroceryBasketPatternIcon(accent: Color, modifier: Modifier = Modifier) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val u = kotlin.math.min(w, h)
+            val basket = Color(0xFF8D6E63)
+            drawRoundRect(
+                color = basket,
+                topLeft = Offset(w * 0.16f, h * 0.50f),
+                size = Size(w * 0.68f, h * 0.28f),
+                cornerRadius = CornerRadius(u * 0.08f, u * 0.08f),
+                style = Stroke(width = u * 0.055f)
+            )
+            drawLine(basket, Offset(w * 0.25f, h * 0.49f), Offset(w * 0.39f, h * 0.28f), strokeWidth = u * 0.035f)
+            drawLine(basket, Offset(w * 0.75f, h * 0.49f), Offset(w * 0.61f, h * 0.28f), strokeWidth = u * 0.035f)
+            repeat(4) { index ->
+                val x = w * (0.26f + index * 0.14f)
+                drawLine(Color(0xFFA1887F), Offset(x, h * 0.53f), Offset(x + w * 0.08f, h * 0.75f), strokeWidth = u * 0.02f)
+            }
+            drawLine(Color(0xFFA1887F), Offset(w * 0.22f, h * 0.62f), Offset(w * 0.78f, h * 0.62f), strokeWidth = u * 0.02f)
+            drawLine(accent.copy(alpha = 0.65f), Offset(w * 0.23f, h * 0.50f), Offset(w * 0.77f, h * 0.50f), strokeWidth = u * 0.035f)
+        }
+        Text("🍞", fontSize = 32.sp, modifier = Modifier.align(Alignment.TopStart).padding(start = 18.dp, top = 14.dp))
+        Text("🍎", fontSize = 32.sp, modifier = Modifier.align(Alignment.TopEnd).padding(end = 17.dp, top = 15.dp))
+        Text("🎃", fontSize = 34.sp, modifier = Modifier.align(Alignment.Center).padding(top = 2.dp))
+    }
+}
+
+@Composable
+private fun TvPatternIcon(accent: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val u = kotlin.math.min(w, h)
+        drawRoundRect(
+            color = Color(0xFF263238),
+            topLeft = Offset(w * 0.16f, h * 0.22f),
+            size = Size(w * 0.68f, h * 0.44f),
+            cornerRadius = CornerRadius(u * 0.055f, u * 0.055f)
+        )
+        drawRoundRect(
+            color = Color(0xFF90CAF9),
+            topLeft = Offset(w * 0.21f, h * 0.27f),
+            size = Size(w * 0.58f, h * 0.34f),
+            cornerRadius = CornerRadius(u * 0.035f, u * 0.035f)
+        )
+        drawLine(accent, Offset(w * 0.50f, h * 0.66f), Offset(w * 0.50f, h * 0.76f), strokeWidth = u * 0.045f)
+        drawRoundRect(
+            color = accent,
+            topLeft = Offset(w * 0.31f, h * 0.76f),
+            size = Size(w * 0.38f, h * 0.07f),
+            cornerRadius = CornerRadius(u * 0.025f, u * 0.025f)
+        )
+        drawLine(Color.White.copy(alpha = 0.65f), Offset(w * 0.28f, h * 0.32f), Offset(w * 0.48f, h * 0.52f), strokeWidth = u * 0.018f)
+    }
+}
+
+@Composable
+private fun OmuricePatternIcon(accent: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val u = kotlin.math.min(w, h)
+        drawOval(Color.White, topLeft = Offset(w * 0.14f, h * 0.50f), size = Size(w * 0.72f, h * 0.24f))
+        drawOval(Color(0xFFFFCA28), topLeft = Offset(w * 0.22f, h * 0.31f), size = Size(w * 0.56f, h * 0.34f))
+        drawLine(Color(0xFFE53935), Offset(w * 0.34f, h * 0.48f), Offset(w * 0.66f, h * 0.40f), strokeWidth = u * 0.055f)
+        drawCircle(Color(0xFFE53935), radius = u * 0.025f, center = Offset(w * 0.50f, h * 0.44f))
+        drawLine(accent, Offset(w * 0.22f, h * 0.77f), Offset(w * 0.48f, h * 0.58f), strokeWidth = u * 0.035f)
+        drawCircle(Color(0xFFBDBDBD), radius = u * 0.055f, center = Offset(w * 0.20f, h * 0.79f))
+    }
+}
+
+@Composable
+private fun ServiceStaffPatternIcon(accent: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val u = kotlin.math.min(w, h)
+        val skin = Color(0xFFFFCC80)
+        val hair = Color(0xFF6D4C41)
+        drawCircle(skin, radius = u * 0.13f, center = Offset(w * 0.50f, h * 0.24f))
+        drawOval(hair, topLeft = Offset(w * 0.37f, h * 0.12f), size = Size(w * 0.26f, h * 0.14f))
+        drawCircle(Color.Black, radius = u * 0.012f, center = Offset(w * 0.46f, h * 0.24f))
+        drawCircle(Color.Black, radius = u * 0.012f, center = Offset(w * 0.54f, h * 0.24f))
+        drawLine(Color(0xFFD84315), Offset(w * 0.46f, h * 0.31f), Offset(w * 0.54f, h * 0.31f), strokeWidth = u * 0.018f)
+        drawRoundRect(
+            color = Color.White,
+            topLeft = Offset(w * 0.34f, h * 0.40f),
+            size = Size(w * 0.32f, h * 0.38f),
+            cornerRadius = CornerRadius(u * 0.09f, u * 0.09f)
+        )
+        drawRoundRect(
+            color = accent,
+            topLeft = Offset(w * 0.39f, h * 0.48f),
+            size = Size(w * 0.22f, h * 0.28f),
+            cornerRadius = CornerRadius(u * 0.04f, u * 0.04f)
+        )
+        drawLine(accent, Offset(w * 0.38f, h * 0.48f), Offset(w * 0.23f, h * 0.60f), strokeWidth = u * 0.04f)
+        drawLine(accent, Offset(w * 0.62f, h * 0.48f), Offset(w * 0.77f, h * 0.60f), strokeWidth = u * 0.04f)
+        drawLine(Color(0xFF455A64), Offset(w * 0.43f, h * 0.78f), Offset(w * 0.40f, h * 0.88f), strokeWidth = u * 0.04f)
+        drawLine(Color(0xFF455A64), Offset(w * 0.57f, h * 0.78f), Offset(w * 0.60f, h * 0.88f), strokeWidth = u * 0.04f)
+    }
+}
+
+@Composable
+private fun HundredYenShopStorePatternIcon(modifier: Modifier = Modifier) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val u = kotlin.math.min(w, h)
+            val red = Color(0xFFE53935)
+            drawRoundRect(
+                color = Color.White,
+                topLeft = Offset(w * 0.14f, h * 0.36f),
+                size = Size(w * 0.72f, h * 0.48f),
+                cornerRadius = CornerRadius(u * 0.025f, u * 0.025f)
+            )
+            drawRoundRect(
+                color = Color(0xFFBBDEFB),
+                topLeft = Offset(w * 0.23f, h * 0.56f),
+                size = Size(w * 0.18f, h * 0.22f),
+                cornerRadius = CornerRadius(u * 0.02f, u * 0.02f)
+            )
+            drawRoundRect(
+                color = Color(0xFFBBDEFB),
+                topLeft = Offset(w * 0.59f, h * 0.56f),
+                size = Size(w * 0.18f, h * 0.22f),
+                cornerRadius = CornerRadius(u * 0.02f, u * 0.02f)
+            )
+            drawRoundRect(
+                color = Color(0xFF90CAF9),
+                topLeft = Offset(w * 0.43f, h * 0.55f),
+                size = Size(w * 0.14f, h * 0.29f),
+                cornerRadius = CornerRadius(u * 0.015f, u * 0.015f)
+            )
+            drawLine(Color.White, Offset(w * 0.50f, h * 0.55f), Offset(w * 0.50f, h * 0.84f), strokeWidth = u * 0.012f)
+            drawRoundRect(
+                color = red,
+                topLeft = Offset(w * 0.10f, h * 0.13f),
+                size = Size(w * 0.80f, h * 0.24f),
+                cornerRadius = CornerRadius(u * 0.035f, u * 0.035f)
+            )
+            val stripeWidth = w * 0.80f / 6f
+            repeat(6) { index ->
+                val color = if (index % 2 == 0) red else Color.White
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(w * 0.10f + stripeWidth * index, h * 0.36f),
+                    size = Size(stripeWidth, h * 0.16f),
+                    cornerRadius = CornerRadius(u * 0.025f, u * 0.025f)
+                )
+            }
+            drawLine(Color(0xFFBDBDBD), Offset(w * 0.14f, h * 0.84f), Offset(w * 0.86f, h * 0.84f), strokeWidth = u * 0.025f)
+        }
+        if (Locale.getDefault().language == Locale.JAPANESE.language) {
+            Text(
+                text = "￥100ショップ",
+                color = Color.White,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 15.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun FoodBasketPatternIcon(accent: Color, modifier: Modifier = Modifier) {
+    val riceOrBread = if (Locale.getDefault().language == Locale.JAPANESE.language) "🍚" else "🍞"
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val u = kotlin.math.min(w, h)
+            drawRoundRect(
+                color = Color(0xFF8D6E63),
+                topLeft = Offset(w * 0.18f, h * 0.48f),
+                size = Size(w * 0.64f, h * 0.28f),
+                cornerRadius = CornerRadius(u * 0.10f, u * 0.10f),
+                style = Stroke(width = u * 0.045f)
+            )
+            repeat(4) { index ->
+                val x = w * (0.28f + index * 0.14f)
+                drawLine(Color(0xFFA1887F), Offset(x, h * 0.50f), Offset(x + w * 0.05f, h * 0.72f), strokeWidth = u * 0.018f)
+            }
+            drawLine(Color(0xFFA1887F), Offset(w * 0.24f, h * 0.60f), Offset(w * 0.76f, h * 0.60f), strokeWidth = u * 0.018f)
+            drawLine(accent.copy(alpha = 0.65f), Offset(w * 0.30f, h * 0.42f), Offset(w * 0.70f, h * 0.42f), strokeWidth = u * 0.035f)
+        }
+        Text("🍎", fontSize = 30.sp, modifier = Modifier.align(Alignment.TopStart).padding(start = 18.dp, top = 16.dp))
+        Text("🐟", fontSize = 30.sp, modifier = Modifier.align(Alignment.TopEnd).padding(end = 14.dp, top = 18.dp))
+        Text(riceOrBread, fontSize = 30.sp, modifier = Modifier.align(Alignment.Center).padding(top = 4.dp))
+    }
+}
+
+@Composable
+private fun FridgePatternIcon(accent: Color, modifier: Modifier = Modifier) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val u = kotlin.math.min(w, h)
+            drawRoundRect(
+                color = Color.White,
+                topLeft = Offset(w * 0.30f, h * 0.14f),
+                size = Size(w * 0.40f, h * 0.72f),
+                cornerRadius = CornerRadius(u * 0.06f, u * 0.06f)
+            )
+            drawRoundRect(
+                color = accent,
+                topLeft = Offset(w * 0.30f, h * 0.14f),
+                size = Size(w * 0.40f, h * 0.72f),
+                cornerRadius = CornerRadius(u * 0.06f, u * 0.06f),
+                style = Stroke(width = u * 0.045f)
+            )
+            drawLine(accent, Offset(w * 0.32f, h * 0.42f), Offset(w * 0.68f, h * 0.42f), strokeWidth = u * 0.035f)
+            drawLine(Color(0xFF455A64), Offset(w * 0.61f, h * 0.24f), Offset(w * 0.61f, h * 0.36f), strokeWidth = u * 0.035f)
+            drawLine(Color(0xFF455A64), Offset(w * 0.61f, h * 0.52f), Offset(w * 0.61f, h * 0.72f), strokeWidth = u * 0.035f)
+        }
+    }
+}
+
+@Composable
+private fun HundredYenShopPatternIcon(modifier: Modifier = Modifier) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val u = kotlin.math.min(w, h)
+            val red = Color(0xFFE53935)
+            drawRoundRect(
+                color = Color.White,
+                topLeft = Offset(w * 0.18f, h * 0.38f),
+                size = Size(w * 0.64f, h * 0.44f),
+                cornerRadius = CornerRadius(u * 0.025f, u * 0.025f)
+            )
+            drawRoundRect(
+                color = Color(0xFF90CAF9),
+                topLeft = Offset(w * 0.32f, h * 0.56f),
+                size = Size(w * 0.36f, h * 0.24f),
+                cornerRadius = CornerRadius(u * 0.02f, u * 0.02f)
+            )
+            drawLine(Color.White, Offset(w * 0.50f, h * 0.56f), Offset(w * 0.50f, h * 0.80f), strokeWidth = u * 0.015f)
+            drawRoundRect(
+                color = red,
+                topLeft = Offset(w * 0.14f, h * 0.16f),
+                size = Size(w * 0.72f, h * 0.23f),
+                cornerRadius = CornerRadius(u * 0.04f, u * 0.04f)
+            )
+            val stripeWidth = w * 0.72f / 5f
+            repeat(5) { index ->
+                val color = if (index % 2 == 0) red else Color.White
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(w * 0.14f + stripeWidth * index, h * 0.36f),
+                    size = Size(stripeWidth, h * 0.16f),
+                    cornerRadius = CornerRadius(u * 0.025f, u * 0.025f)
+                )
+            }
+        }
+        if (Locale.getDefault().language == Locale.JAPANESE.language) {
+            Text(
+                text = "￥100ショップ",
+                color = Color.White,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 17.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PatternPickerGridScreen(
+    memo: ShoppingMemo,
+    patterns: List<ShoppingVisualPattern>,
+    oneHandModeEnabled: Boolean,
+    onSelect: (Int) -> Unit
+) {
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val gridState = rememberLazyGridState()
+    var screenHeightPx by remember { mutableStateOf(0) }
+    var oneHandOffsetPx by remember { mutableStateOf(0f) }
+    var oneHandFlingGeneration by remember { mutableStateOf(0) }
+    val oneHandMaxOffsetPx = (screenHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
+    val oneHandBackdropHeight = with(density) { oneHandOffsetPx.toDp() }
+    val latestGridAtTop by rememberUpdatedState(!gridState.canScrollBackward)
+
+    LaunchedEffect(oneHandModeEnabled) {
+        if (!oneHandModeEnabled) oneHandOffsetPx = 0f
+    }
+
+    fun startOneHandFling(initialVelocityY: Float) {
+        if (oneHandMaxOffsetPx <= 0f || kotlin.math.abs(initialVelocityY) < 120f) return
+        val generation = ++oneHandFlingGeneration
+        scope.launch {
+            var velocityY = initialVelocityY.coerceIn(-3200f, 3200f)
+            var lastFrameNanos = withFrameNanos { it }
+            while (generation == oneHandFlingGeneration && kotlin.math.abs(velocityY) > 30f) {
+                val frameNanos = withFrameNanos { it }
+                val deltaSeconds = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.04f)
+                lastFrameNanos = frameNanos
+                val nextOffset = (oneHandOffsetPx + velocityY * deltaSeconds).coerceIn(0f, oneHandMaxOffsetPx)
+                if (nextOffset == oneHandOffsetPx) break
+                oneHandOffsetPx = nextOffset
+                velocityY *= 0.90f
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { screenHeightPx = it.size.height }
+    ) {
+        if (oneHandModeEnabled && oneHandOffsetPx > 1f) {
+            OneHandModeBackdrop(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(oneHandBackdropHeight)
+                    .graphicsLayer {
+                        alpha = (0.42f + (oneHandOffsetPx / oneHandMaxOffsetPx.coerceAtLeast(1f)) * 0.46f)
+                            .coerceIn(0.42f, 0.88f)
+                    }
+            )
+        }
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            state = gridState,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { translationY = oneHandOffsetPx }
+                .pointerInput(oneHandModeEnabled, oneHandMaxOffsetPx) {
+                    if (!oneHandModeEnabled) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        oneHandFlingGeneration++
+                        val gridAtTopWhenGestureStarted = latestGridAtTop
+                        var totalX = 0f
+                        var totalY = 0f
+                        var lastVelocityY = 0f
+                        var movedContentInGesture = false
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            val delta = change.positionChange()
+                            totalX += delta.x
+                            totalY += delta.y
+                            val verticalGesture = kotlin.math.abs(totalY) > kotlin.math.abs(totalX) * 1.15f
+                            val canPullDown = delta.y > 0f && oneHandOffsetPx < oneHandMaxOffsetPx && gridAtTopWhenGestureStarted
+                            val canPushUp = delta.y < 0f && oneHandOffsetPx > 0f
+                            if (verticalGesture && (canPullDown || canPushUp)) {
+                                val boostedDeltaY = delta.y * OneHandScrollSpeedMultiplier
+                                val nextOffset = (oneHandOffsetPx + boostedDeltaY).coerceIn(0f, oneHandMaxOffsetPx)
+                                if (nextOffset != oneHandOffsetPx) {
+                                    oneHandOffsetPx = nextOffset
+                                    lastVelocityY = boostedDeltaY * 60f
+                                    movedContentInGesture = true
+                                    change.consume()
+                                }
+                            }
+                        }
+                        if (movedContentInGesture) startOneHandFling(lastVelocityY)
+                    }
+                },
+            contentPadding = PaddingValues(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(patterns.indices.toList(), key = { it }) { index ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(148.dp)
+                        .clickable { onSelect(index) },
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(
+                        width = if (memo.imagePattern == index) 3.dp else 1.dp,
+                        color = if (memo.imagePattern == index) Color(0xFF1976D2) else Color(0xFFE0E0E0)
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 5.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White)
+                ) {
+                    ShoppingPatternImage(
+                        pattern = index,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(10.dp)
+                    )
                 }
             }
         }
