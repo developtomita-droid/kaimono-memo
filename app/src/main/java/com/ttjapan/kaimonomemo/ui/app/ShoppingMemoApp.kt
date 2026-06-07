@@ -60,6 +60,7 @@ import androidx.compose.material3.Divider
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -113,8 +114,10 @@ import com.ttjapan.kaimonomemo.R
 import com.ttjapan.kaimonomemo.data.assignDefaultTitleIfBlank
 import com.ttjapan.kaimonomemo.data.loadMemos
 import com.ttjapan.kaimonomemo.data.loadOneHandModeEnabled
+import com.ttjapan.kaimonomemo.data.loadSimpleModeEnabled
 import com.ttjapan.kaimonomemo.data.saveMemos
 import com.ttjapan.kaimonomemo.data.saveOneHandModeEnabled
+import com.ttjapan.kaimonomemo.data.saveSimpleModeEnabled
 import com.ttjapan.kaimonomemo.model.ShoppingEntry
 import com.ttjapan.kaimonomemo.model.ShoppingMemo
 import com.ttjapan.kaimonomemo.voice.ContinuousSpeechController
@@ -193,12 +196,17 @@ fun ShoppingMemoApp() {
     var currentScreen by remember { mutableStateOf(Screen.Home) }
     var selectedMemoId by remember { mutableStateOf<String?>(null) }
     var oneHandModeEnabled by remember { mutableStateOf(loadOneHandModeEnabled(context)) }
+    var simpleModeEnabled by remember { mutableStateOf(loadSimpleModeEnabled(context)) }
     val selectedMemo = memos.firstOrNull { it.id == selectedMemoId }
 
     fun persist() = saveMemos(context, memos)
     fun updateOneHandMode(enabled: Boolean) {
         oneHandModeEnabled = enabled
         saveOneHandModeEnabled(context, enabled)
+    }
+    fun updateSimpleMode(enabled: Boolean) {
+        simpleModeEnabled = enabled
+        saveSimpleModeEnabled(context, enabled)
     }
     fun openMemo(memo: ShoppingMemo) {
         selectedMemoId = memo.id
@@ -281,7 +289,9 @@ fun ShoppingMemoApp() {
                 Screen.Settings -> SettingsScreen(
                     memoCount = memos.size,
                     oneHandModeEnabled = oneHandModeEnabled,
-                    onOneHandModeChanged = ::updateOneHandMode
+                    onOneHandModeChanged = ::updateOneHandMode,
+                    simpleModeEnabled = simpleModeEnabled,
+                    onSimpleModeChanged = ::updateSimpleMode
                 )
                 Screen.Favorites -> FavoritesScreen(
                     memos = memos.filter { it.favorite },
@@ -1591,8 +1601,6 @@ private fun swipeToTrashModifier(
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             val editTapSuppressionSerialAtDown = latestEditTapSuppressionSerial
             down.consume()
-            focusManager.clearFocus(force = true)
-            onPressStarted()
             val preLongPressResult = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
                 var totalMove = Offset.Zero
                 while (true) {
@@ -1614,6 +1622,8 @@ private fun swipeToTrashModifier(
                 return@awaitEachGesture
             }
 
+            focusManager.clearFocus(force = true)
+            onPressStarted()
             onSwipeStart()
             try {
                 var activePointerId = down.id
@@ -1748,7 +1758,8 @@ private fun ShoppingEntryRow(
     var fieldValue by remember(entry.id) { mutableStateOf(TextFieldValue(entry.name)) }
     var textLayoutResult by remember(entry.id) { mutableStateOf<TextLayoutResult?>(null) }
     var pendingTapPosition by remember(entry.id) { mutableStateOf<Offset?>(null) }
-    val rowBackground = if (selected) focusedEntryBackground(entry.colorMark) else entryColorMarkBackground(entry.colorMark)
+    var textFocused by remember(entry.id) { mutableStateOf(false) }
+    val rowBackground = if (selected) focusedEntryBackground() else entryColorMarkBackground(entry.colorMark)
     val rowSwipeModifier = swipeToTrashModifier(
         key = entry.id,
         enabled = canDrag,
@@ -1777,7 +1788,9 @@ private fun ShoppingEntryRow(
                 ?.coerceIn(0, fieldValue.text.length)
                 ?: fieldValue.selection.start.coerceIn(0, fieldValue.text.length)
             fieldValue = fieldValue.copy(selection = TextRange(tapOffset))
-            focusRequester.requestFocus()
+            if (!textFocused) {
+                focusRequester.requestFocus()
+            }
             onFocusConsumed()
             pendingTapPosition = null
         }
@@ -1814,6 +1827,7 @@ private fun ShoppingEntryRow(
                         .fillMaxWidth()
                     .focusRequester(focusRequester)
                     .onFocusChanged {
+                        textFocused = it.isFocused
                         if (it.isFocused) onFocused() else onFocusCleared()
                     }
                     .padding(vertical = 12.dp),
@@ -1861,8 +1875,8 @@ private fun entryColorMarkBackground(colorMark: Int): Color {
     }
 }
 
-private fun focusedEntryBackground(colorMark: Int): Color {
-    return if (colorMark == 2) Color(0xFFFFF8D8) else Color(0xFFE3F2FD)
+private fun focusedEntryBackground(): Color {
+    return Color(0xFFFFF8D8)
 }
 
 @Composable
@@ -2217,11 +2231,26 @@ private fun FavoritesScreen(
 private fun SettingsScreen(
     memoCount: Int,
     oneHandModeEnabled: Boolean,
-    onOneHandModeChanged: (Boolean) -> Unit
+    onOneHandModeChanged: (Boolean) -> Unit,
+    simpleModeEnabled: Boolean,
+    onSimpleModeChanged: (Boolean) -> Unit
 ) {
     Column(Modifier.fillMaxSize()) {
         Header("設定")
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text("モード", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF444444))
+            SettingModeRow(
+                title = "かんたんモード",
+                description = "基本操作を中心にしたモードです。",
+                selected = simpleModeEnabled,
+                onClick = { onSimpleModeChanged(true) }
+            )
+            SettingModeRow(
+                title = "高機能モード",
+                description = "より細かい操作を使うためのモードです。",
+                selected = !simpleModeEnabled,
+                onClick = { onSimpleModeChanged(false) }
+            )
             SettingToggleRow(
                 title = "片手だけで操作可能モード",
                 description = "一覧を下半分までスクロールできるようにし、片手で操作しやすくします。",
@@ -2233,6 +2262,33 @@ private fun SettingsScreen(
             SettingRow("通信", "サーバーアクセスなし")
         }
     }
+}
+
+@Composable
+private fun SettingModeRow(
+    title: String,
+    description: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 6.dp)
+        ) {
+            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+            Spacer(Modifier.height(4.dp))
+            Text(description, color = Color(0xFF666666), fontSize = 13.sp, lineHeight = 18.sp)
+        }
+    }
+    Divider(color = Color(0xFFE0E0E0))
 }
 
 @Composable
