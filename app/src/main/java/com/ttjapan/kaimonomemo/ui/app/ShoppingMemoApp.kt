@@ -672,6 +672,8 @@ private fun AdvancedHomeScreen(
                         onToggleFavorite = onToggleFavorite,
                         onAddMemo = onAddMemo,
                         showCardDropTargets = draggingId != null,
+                        imageTargetActive = imageChangeBounds?.contains(dragPoint) == true,
+                        trashTargetActive = cardTrashBounds?.contains(dragPoint) == true,
                         onImageTargetPositioned = { imageChangeBounds = it },
                         onTrashTargetPositioned = { cardTrashBounds = it },
                         draggingTemporaryEntryId = draggingTemporaryEntry?.id,
@@ -702,6 +704,27 @@ private fun AdvancedHomeScreen(
                     )
                 }
             }
+        }
+
+        val draggedMemo = memos.firstOrNull { it.id == draggingId }
+        val draggedBounds = draggedCardBounds
+        if (draggedMemo != null && draggedBounds != null) {
+            MemoCard(
+                memo = draggedMemo,
+                modifier = Modifier
+                    .graphicsLayer {
+                        translationX = draggedBounds.left - (homeBounds?.left ?: 0f) + dragOffset.x
+                        translationY = draggedBounds.top - (homeBounds?.top ?: 0f) + dragOffset.y
+                        scaleX = 1.05f
+                        scaleY = 1.05f
+                        shadowElevation = 26f
+                    }
+                    .width(with(density) { draggedBounds.width.toDp() })
+                    .height(with(density) { draggedBounds.height.toDp() })
+                    .zIndex(60f),
+                onClick = {},
+                onToggleFavorite = {}
+            )
         }
 
         draggingTemporaryEntry?.let { entry ->
@@ -803,6 +826,8 @@ private fun HomeItemsPage(
     onToggleFavorite: (ShoppingMemo) -> Unit,
     onAddMemo: () -> Unit,
     showCardDropTargets: Boolean,
+    imageTargetActive: Boolean,
+    trashTargetActive: Boolean,
     onImageTargetPositioned: (Rect) -> Unit,
     onTrashTargetPositioned: (Rect) -> Unit,
     draggingTemporaryEntryId: String?,
@@ -820,6 +845,7 @@ private fun HomeItemsPage(
         Column(
             modifier = Modifier
                 .weight(1f)
+                .zIndex(if (draggingId != null) 10f else 0f)
                 .fillMaxHeight()
                 .padding(end = 6.dp)
         ) {
@@ -845,7 +871,9 @@ private fun HomeItemsPage(
                                 scaleX = if (isDragging) 1.05f else 1f
                                 scaleY = if (isDragging) 1.05f else 1f
                                 shadowElevation = if (isDragging) 18f else 0f
+                                alpha = if (isDragging) 0f else 1f
                             }
+                            .zIndex(if (isDragging) 20f else 0f)
                             .onGloballyPositioned {
                                 val bounds = it.boundsInWindow()
                                 cardBounds = bounds
@@ -889,6 +917,8 @@ private fun HomeItemsPage(
                     .padding(start = 6.dp)
                     .weight(1f)
                     .fillMaxHeight(),
+                imageTargetActive = imageTargetActive,
+                trashTargetActive = trashTargetActive,
                 onImageTargetPositioned = onImageTargetPositioned,
                 onTrashTargetPositioned = onTrashTargetPositioned
             )
@@ -913,6 +943,8 @@ private fun HomeItemsPage(
 @Composable
 private fun HomeCardDropTargets(
     modifier: Modifier = Modifier,
+    imageTargetActive: Boolean,
+    trashTargetActive: Boolean,
     onImageTargetPositioned: (Rect) -> Unit,
     onTrashTargetPositioned: (Rect) -> Unit
 ) {
@@ -925,6 +957,7 @@ private fun HomeCardDropTargets(
             icon = "画像",
             containerColor = Color(0xFFE3F2FD),
             contentColor = Color(0xFF1565C0),
+            active = imageTargetActive,
             modifier = Modifier
                 .weight(1f)
                 .onGloballyPositioned { onImageTargetPositioned(it.boundsInWindow()) }
@@ -934,6 +967,7 @@ private fun HomeCardDropTargets(
             icon = "削除",
             containerColor = Color(0xFFFFEBEE),
             contentColor = Color(0xFFD32F2F),
+            active = trashTargetActive,
             modifier = Modifier
                 .weight(1f)
                 .onGloballyPositioned { onTrashTargetPositioned(it.boundsInWindow()) }
@@ -947,13 +981,18 @@ private fun HomeDropTargetCard(
     icon: String,
     containerColor: Color,
     contentColor: Color,
+    active: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val sparkleAlpha = rememberSparkleAlpha(active)
+    val isTrashTarget = contentColor == Color(0xFFD32F2F)
     Card(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .sparkleOverlay(sparkleAlpha),
         shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(2.dp, contentColor.copy(alpha = 0.35f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        border = BorderStroke(if (active) 4.dp else 2.dp, contentColor.copy(alpha = if (active) 0.95f else 0.35f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (active) 14.dp else 8.dp),
         colors = CardDefaults.cardColors(containerColor = containerColor)
     ) {
         Column(
@@ -963,9 +1002,12 @@ private fun HomeDropTargetCard(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Text(icon, color = contentColor, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(10.dp))
-            Text(title, color = contentColor, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(
+                text = if (isTrashTarget) "🗑" else "画像",
+                color = contentColor,
+                fontSize = if (isTrashTarget) 56.sp else 28.sp,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }
@@ -1557,7 +1599,7 @@ private fun MemoCard(
                 contentAlignment = Alignment.Center
             ) {
                 Text("🛒", fontSize = 76.sp)
-                ShoppingPatternImage(pattern = memo.imagePattern, modifier = Modifier.size(104.dp))
+                ShoppingPatternImage(pattern = memo.imagePattern, modifier = Modifier.fillMaxSize())
                 IconButton(
                     onClick = onToggleFavorite,
                     modifier = Modifier
@@ -1636,24 +1678,41 @@ private val ShoppingImagePatterns = listOf(
     ShoppingImagePattern("写真", "🖼", "選", Color(0xFFEDE7F6), Color(0xFF512DA8))
 )
 
+private fun activeShoppingImagePatterns(): List<ShoppingImagePattern> {
+    val shopPattern = if (Locale.getDefault().language == Locale.JAPANESE.language) {
+        ShoppingImagePattern("100円ショップ", "100\n🛍 🏬", "", Color(0xFFFFF3E0), Color(0xFFE65100))
+    } else {
+        ShoppingImagePattern("ショップ", "🛍 🏬\n🛒", "", Color(0xFFFFF3E0), Color(0xFFE65100))
+    }
+    return listOf(
+        ShoppingImagePattern("食料品", "🥬 🍞\n🍚 🐟", "", Color(0xFFE8F5E9), Color(0xFF2E7D32)),
+        ShoppingImagePattern("カート", "🛒", "", Color(0xFFFFEBEE), Color(0xFFD32F2F)),
+        ShoppingImagePattern("家電", "🔌 💡\n📺", "", Color(0xFFE3F2FD), Color(0xFF1565C0)),
+        ShoppingImagePattern("ゲーム", "🎮 ⭐\n🎲", "", Color(0xFFEDE7F6), Color(0xFF512DA8)),
+        ShoppingImagePattern("レストラン", "🍽 ☕\n🍰", "", Color(0xFFFFF8E1), Color(0xFFF57F17)),
+        ShoppingImagePattern("服と靴", "👕 👟\n🧢", "", Color(0xFFFCE4EC), Color(0xFFC2185B)),
+        ShoppingImagePattern("スポーツ用品", "⚽ 🏀\n🎾", "", Color(0xFFE0F2F1), Color(0xFF00796B)),
+        ShoppingImagePattern("サービス業", "😊 🤝\n✨", "", Color(0xFFFFFDE7), Color(0xFFF9A825)),
+        shopPattern,
+        ShoppingImagePattern("雑貨", "🧺 🧴\n🧻", "", Color(0xFFF5F5F5), Color(0xFF616161))
+    )
+}
+
 @Composable
 private fun ShoppingPatternImage(pattern: Int, modifier: Modifier = Modifier) {
-    val item = ShoppingImagePatterns[((pattern % ShoppingImagePatterns.size) + ShoppingImagePatterns.size) % ShoppingImagePatterns.size]
+    val patterns = activeShoppingImagePatterns()
+    val item = patterns[((pattern % patterns.size) + patterns.size) % patterns.size]
     Box(
         modifier = modifier
-            .background(item.background, RoundedCornerShape(18.dp))
-            .padding(8.dp),
+            .background(item.background, RoundedCornerShape(0.dp))
+            .padding(4.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(item.symbol, fontSize = 42.sp)
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .background(Color.White.copy(alpha = 0.88f), CircleShape)
-                .padding(horizontal = 6.dp, vertical = 2.dp)
-        ) {
-            Text(item.accent, color = item.foreground, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-        }
+        Text(
+            text = item.symbol,
+            fontSize = if (item.symbol.contains('\n')) 36.sp else 86.sp,
+            lineHeight = 40.sp
+        )
     }
 }
 
@@ -1663,6 +1722,7 @@ private fun PatternPickerScreen(
     onBack: () -> Unit,
     onSelect: (Int) -> Unit
 ) {
+    val patterns = activeShoppingImagePatterns()
     Column(Modifier.fillMaxSize()) {
         Header(
             title = "画像パターン",
@@ -1688,12 +1748,11 @@ private fun PatternPickerScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(ShoppingImagePatterns.indices.toList(), key = { it }) { index ->
-                val item = ShoppingImagePatterns[index]
+            items(patterns.indices.toList(), key = { it }) { index ->
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(160.dp)
+                        .height(136.dp)
                         .clickable { onSelect(index) },
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(
@@ -1706,13 +1765,11 @@ private fun PatternPickerScreen(
                     Column(
                         Modifier
                             .fillMaxSize()
-                            .padding(12.dp),
+                            .padding(10.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        ShoppingPatternImage(pattern = index, modifier = Modifier.size(92.dp))
-                        Spacer(Modifier.height(10.dp))
-                        Text(item.name, color = Color(0xFF333333), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        ShoppingPatternImage(pattern = index, modifier = Modifier.fillMaxSize())
                     }
                 }
             }
