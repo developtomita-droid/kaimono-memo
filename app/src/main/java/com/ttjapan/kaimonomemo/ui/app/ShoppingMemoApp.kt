@@ -96,9 +96,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -162,16 +165,11 @@ private fun ensureDisplayBlankEntry(memo: ShoppingMemo): ShoppingEntry? {
     val blank = memo.entries.firstOrNull { it.name.isBlank() }
     memo.entries.clear()
     memo.entries.addAll(active)
-    if (blank != null) {
-        memo.entries.add(blank)
-        memo.entries.addAll(done)
-        return blank
-    }
     if (active.isEmpty()) {
-        val newBlank = ShoppingEntry(name = "")
-        memo.entries.add(newBlank)
+        val displayBlank = blank ?: ShoppingEntry(name = "")
+        memo.entries.add(displayBlank)
         memo.entries.addAll(done)
-        return newBlank
+        return displayBlank
     }
     memo.entries.addAll(done)
     return null
@@ -945,6 +943,16 @@ private fun ActiveItemsPage(
     var previousBottomPadding by remember { mutableStateOf(bottomPadding) }
     val listAtTop = !listState.canScrollBackward
 
+    fun removeUnusedBlankEntry(): Boolean {
+        if (memo.entries.none { it.name.isNotBlank() && !it.checked }) return false
+        val removed = memo.entries.removeAll { it.name.isBlank() }
+        if (removed) {
+            onSelect(null)
+            onFocusedItemConsumed()
+        }
+        return removed
+    }
+
     LaunchedEffect(listAtTop) {
         onListAtTopChanged(listAtTop)
     }
@@ -955,8 +963,13 @@ private fun ActiveItemsPage(
         return -targetY
     }
 
-    LaunchedEffect(memo.entries.size) {
-        ensureDisplayBlankEntry(memo)
+    LaunchedEffect(memo.entries.size, focusedItemRequestId, selectedEntryId) {
+        val editingBlank = memo.entries.any {
+            it.name.isBlank() && (it.id == focusedItemRequestId || it.id == selectedEntryId)
+        }
+        if (!editingBlank) {
+            ensureDisplayBlankEntry(memo)
+        }
     }
 
     LaunchedEffect(focusedItemRequestId, selectedEntryId, bottomPadding) {
@@ -1430,6 +1443,9 @@ private fun ActiveItemsPage(
                             focusManager.clearFocus(force = true)
                             onSelect(null)
                             onFocusedItemConsumed()
+                            if (removeUnusedBlankEntry()) {
+                                onChanged()
+                            }
                             break
                         }
                     }
@@ -1475,10 +1491,16 @@ private fun ActiveItemsPage(
                     if (entry.name.isNotBlank()) scrollAnchor = ScrollAnchor.Item
                     onEntryFocused()
                 },
-                onFocusCleared = { onEntryFocusCleared(entry.id) },
+                onFocusCleared = {
+                    onEntryFocusCleared(entry.id)
+                },
                 onNameChanged = {
                     entry.name = it
-                    ensureDisplayBlankEntry(memo)
+                    if (it.isBlank() && selectedEntryId == entry.id && memo.entries.any { other -> other.id != entry.id && other.name.isNotBlank() && !other.checked }) {
+                        memo.entries.removeAll { other -> other.id != entry.id && other.name.isBlank() }
+                    } else {
+                        ensureDisplayBlankEntry(memo)
+                    }
                     onChanged()
                 },
                 onComplete = { markDone(entry) },
@@ -1556,7 +1578,7 @@ private fun swipeToTrashModifier(
     enabled: Boolean,
     editTapSuppressionSerial: Int = 0,
     onPressStarted: () -> Unit = {},
-    onTap: () -> Unit = {},
+    onTap: (Offset) -> Unit = {},
     onSwipeStart: () -> Unit,
     onSwipeDrag: (Float, Float) -> Unit,
     onSwipeEnd: () -> Unit
@@ -1585,7 +1607,7 @@ private fun swipeToTrashModifier(
             }
             if (preLongPressResult == true) {
                 if (latestEditTapSuppressionSerial == editTapSuppressionSerialAtDown) {
-                    onTap()
+                    onTap(down.position)
                 }
                 return@awaitEachGesture
             } else if (preLongPressResult == false) {
@@ -1706,7 +1728,7 @@ private fun ShoppingEntryRow(
     modifier: Modifier = Modifier,
     onSelect: () -> Unit,
     onPressStarted: () -> Unit,
-    onEditRequested: () -> Unit,
+    onEditRequested: (Offset) -> Unit,
     onNumberClick: () -> Unit,
     onFocusConsumed: () -> Unit,
     onFocused: () -> Unit,
@@ -1723,22 +1745,41 @@ private fun ShoppingEntryRow(
 ) {
     val focusRequester = remember { FocusRequester() }
     val canDrag = entry.name.isNotBlank()
-    val rowBackground = if (selected) Color(0xFFE3F2FD) else entryColorMarkBackground(entry.colorMark)
+    var fieldValue by remember(entry.id) { mutableStateOf(TextFieldValue(entry.name)) }
+    var textLayoutResult by remember(entry.id) { mutableStateOf<TextLayoutResult?>(null) }
+    var pendingTapPosition by remember(entry.id) { mutableStateOf<Offset?>(null) }
+    val rowBackground = if (selected) focusedEntryBackground(entry.colorMark) else entryColorMarkBackground(entry.colorMark)
     val rowSwipeModifier = swipeToTrashModifier(
         key = entry.id,
         enabled = canDrag,
         editTapSuppressionSerial = editTapSuppressionSerial,
         onPressStarted = onPressStarted,
-        onTap = onEditRequested,
+        onTap = {
+            pendingTapPosition = it
+            onEditRequested(it)
+        },
         onSwipeStart = onDeleteSwipeStart,
         onSwipeDrag = onDeleteSwipeDrag,
         onSwipeEnd = onDeleteSwipeEnd
     )
 
+    LaunchedEffect(entry.name) {
+        if (entry.name != fieldValue.text) {
+            val selection = fieldValue.selection.start.coerceIn(0, entry.name.length)
+            fieldValue = fieldValue.copy(text = entry.name, selection = TextRange(selection))
+        }
+    }
+
     LaunchedEffect(shouldRequestFocus) {
         if (shouldRequestFocus) {
+            val tapOffset = pendingTapPosition
+                ?.let { textLayoutResult?.getOffsetForPosition(it) }
+                ?.coerceIn(0, fieldValue.text.length)
+                ?: fieldValue.selection.start.coerceIn(0, fieldValue.text.length)
+            fieldValue = fieldValue.copy(selection = TextRange(tapOffset))
             focusRequester.requestFocus()
             onFocusConsumed()
+            pendingTapPosition = null
         }
     }
 
@@ -1762,8 +1803,11 @@ private fun ShoppingEntryRow(
                     .weight(1f)
             ) {
                 BasicTextField(
-                    value = entry.name,
-                    onValueChange = onNameChanged,
+                    value = fieldValue,
+                    onValueChange = {
+                        fieldValue = it
+                        onNameChanged(it.text)
+                    },
                     enabled = selected && !isDeleteSwiping,
                     singleLine = false,
                     modifier = Modifier
@@ -1775,6 +1819,7 @@ private fun ShoppingEntryRow(
                     .padding(vertical = 12.dp),
                     minLines = 1,
                     maxLines = 8,
+                    onTextLayout = { textLayoutResult = it },
                     textStyle = TextStyle(
                         fontSize = 20.sp,
                         color = Color.Black,
@@ -1809,11 +1854,15 @@ private fun ShoppingEntryRow(
 
 private fun entryColorMarkBackground(colorMark: Int): Color {
     return when (colorMark) {
-        1 -> Color(0xFFEAF4FF)
-        2 -> Color(0xFFFFEEEE)
-        3 -> Color(0xFFFFF8D8)
+        1 -> Color(0xFFFFEEEE)
+        2 -> Color(0xFFEAF4FF)
+        3 -> Color(0xFFEAF8E8)
         else -> Color.White
     }
+}
+
+private fun focusedEntryBackground(colorMark: Int): Color {
+    return if (colorMark == 2) Color(0xFFFFF8D8) else Color(0xFFE3F2FD)
 }
 
 @Composable
