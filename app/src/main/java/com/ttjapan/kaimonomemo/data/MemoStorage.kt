@@ -23,6 +23,8 @@ fun loadMemos(context: Context): List<ShoppingMemo> {
                 id = obj.optString("id", UUID.randomUUID().toString()),
                 title = obj.optString("title", ""),
                 favorite = obj.optBoolean("favorite", false),
+                trashed = obj.optBoolean("trashed", false),
+                imagePattern = obj.optInt("imagePattern", 0),
                 entries = readEntries(obj.optJSONArray("entries")),
                 deletedEntries = readEntries(obj.optJSONArray("deletedEntries"))
             )
@@ -32,12 +34,14 @@ fun loadMemos(context: Context): List<ShoppingMemo> {
 
 fun saveMemos(context: Context, memos: List<ShoppingMemo>) {
     val array = JSONArray()
-    memos.filter { it.title.isNotBlank() || it.entries.any { entry -> entry.name.isNotBlank() } || it.deletedEntries.any { entry -> entry.name.isNotBlank() } }
+    memos.filter { it.trashed || it.title.isNotBlank() || it.entries.any { entry -> entry.name.isNotBlank() } || it.deletedEntries.any { entry -> entry.name.isNotBlank() } }
         .forEach { memo ->
         array.put(JSONObject().apply {
             put("id", memo.id)
             put("title", memo.title)
             put("favorite", memo.favorite)
+            put("trashed", memo.trashed)
+            put("imagePattern", memo.imagePattern)
             put("entries", JSONArray().also { entries ->
                 memo.entries.filter { it.name.isNotBlank() }.forEach { entry ->
                     entries.put(JSONObject().apply {

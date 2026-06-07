@@ -41,8 +41,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
@@ -133,6 +135,7 @@ import java.util.Locale
 private enum class Screen {
     Home,
     Detail,
+    PatternPicker,
     Map,
     Settings,
     Favorites
@@ -161,9 +164,24 @@ private const val OneHandMaxOffsetRatio = 0.46f
 private const val OneHandScrollSpeedMultiplier = 1.5f
 private const val TemporaryMemoId = "temporary-shopping-memo"
 private const val TemporaryMemoTitle = "テンポラリ"
+private const val SimpleTemporaryMemoTitle = "お買い物リスト"
 private val TrashTabSelectedColor = Color(0xFFE91E63)
 
 private fun isTemporaryMemo(memo: ShoppingMemo): Boolean = memo.id == TemporaryMemoId
+
+private fun temporaryTitleForMode(simpleModeEnabled: Boolean): String {
+    return if (simpleModeEnabled) SimpleTemporaryMemoTitle else TemporaryMemoTitle
+}
+
+private fun isTemporaryDefaultTitle(title: String): Boolean {
+    return title.isBlank() || title == TemporaryMemoTitle || title == SimpleTemporaryMemoTitle
+}
+
+private fun applyTemporaryTitleForMode(memo: ShoppingMemo, simpleModeEnabled: Boolean) {
+    if (isTemporaryDefaultTitle(memo.title)) {
+        memo.title = temporaryTitleForMode(simpleModeEnabled)
+    }
+}
 
 @Composable
 private fun rememberSparkleAlpha(active: Boolean): Float {
@@ -235,26 +253,30 @@ private fun requestBlankEntry(memo: ShoppingMemo): ShoppingEntry {
 @Composable
 fun ShoppingMemoApp() {
     val context = LocalContext.current
+    val initialSimpleModeEnabled = remember { loadSimpleModeEnabled(context) }
     val memos = remember {
         mutableStateListOf<ShoppingMemo>().also { state ->
             val loaded = loadMemos(context).toMutableList()
             val temporaryMemo = loaded.firstOrNull { it.id == TemporaryMemoId }
             if (temporaryMemo == null) {
-                loaded.add(0, ShoppingMemo(id = TemporaryMemoId, title = TemporaryMemoTitle))
+                loaded.add(0, ShoppingMemo(id = TemporaryMemoId, title = temporaryTitleForMode(initialSimpleModeEnabled)))
             } else {
-                temporaryMemo.title = TemporaryMemoTitle
+                applyTemporaryTitleForMode(temporaryMemo, initialSimpleModeEnabled)
             }
             state.addAll(loaded)
         }
     }
     var currentScreen by remember { mutableStateOf(Screen.Home) }
     var selectedMemoId by remember { mutableStateOf<String?>(null) }
+    var imageEditingMemoId by remember { mutableStateOf<String?>(null) }
     var oneHandModeEnabled by remember { mutableStateOf(loadOneHandModeEnabled(context)) }
-    var simpleModeEnabled by remember { mutableStateOf(loadSimpleModeEnabled(context)) }
+    var simpleModeEnabled by remember { mutableStateOf(initialSimpleModeEnabled) }
     val recentlyMovedEntryIds = remember { mutableStateListOf<String>() }
     val selectedMemo = memos.firstOrNull { it.id == selectedMemoId }
+    val imageEditingMemo = memos.firstOrNull { it.id == imageEditingMemoId }
     val temporaryMemo = memos.first { it.id == TemporaryMemoId }
-    val normalMemos = memos.filterNot(::isTemporaryMemo)
+    val activeMemos = memos.filter { !isTemporaryMemo(it) && !it.trashed }
+    val trashedMemos = memos.filter { !isTemporaryMemo(it) && it.trashed }
 
     fun persist() = saveMemos(context, memos)
     fun updateOneHandMode(enabled: Boolean) {
@@ -263,7 +285,9 @@ fun ShoppingMemoApp() {
     }
     fun updateSimpleMode(enabled: Boolean) {
         simpleModeEnabled = enabled
+        applyTemporaryTitleForMode(temporaryMemo, enabled)
         saveSimpleModeEnabled(context, enabled)
+        persist()
     }
     fun openMemo(memo: ShoppingMemo) {
         selectedMemoId = memo.id
@@ -273,7 +297,7 @@ fun ShoppingMemoApp() {
         selectedMemo?.let { memo ->
             pruneBlankEntries(memo)
             if (isTemporaryMemo(memo)) {
-                memo.title = TemporaryMemoTitle
+                applyTemporaryTitleForMode(memo, simpleModeEnabled)
             } else if (memo.title.isBlank() && memo.entries.none { it.name.isNotBlank() } && memo.deletedEntries.none { it.name.isNotBlank() }) {
                 memos.remove(memo)
                 selectedMemoId = null
@@ -290,12 +314,21 @@ fun ShoppingMemoApp() {
         memos.add(memo)
         openMemo(memo)
     }
+    fun finishTemporaryHome() {
+        pruneBlankEntries(temporaryMemo)
+        applyTemporaryTitleForMode(temporaryMemo, simpleModeEnabled)
+        persist()
+        currentScreen = Screen.Home
+    }
 
     BackHandler(enabled = currentScreen == Screen.Home) {
         // ホームでの戻るジェスチャーではアプリを終了しない。
     }
     BackHandler(enabled = currentScreen == Screen.Detail) {
         finishDetail()
+    }
+    BackHandler(enabled = currentScreen == Screen.PatternPicker) {
+        currentScreen = Screen.Home
     }
 
     Scaffold(
@@ -320,26 +353,54 @@ fun ShoppingMemoApp() {
             color = Color.White
         ) {
             when (currentScreen) {
-                Screen.Home -> HomeScreen(
-                    memos = normalMemos,
-                    temporaryMemo = temporaryMemo,
-                    onAddMemo = ::addMemo,
-                    onOpenMemo = ::openMemo,
-                    onOpenTemporaryMemo = { openMemo(temporaryMemo) },
-                    onTemporaryEntryMoved = { targetMemo, entry ->
-                        recentlyMovedEntryIds.remove(entry.id)
-                        recentlyMovedEntryIds.add(entry.id)
-                        persist()
-                    },
-                    onDeleteMemo = {
-                        if (!isTemporaryMemo(it)) memos.remove(it)
-                        persist()
-                    },
-                    onToggleFavorite = {
-                        it.favorite = !it.favorite
-                        persist()
+                Screen.Home -> {
+                    if (simpleModeEnabled) {
+                        MemoDetailScreen(
+                            memo = temporaryMemo,
+                            oneHandModeEnabled = oneHandModeEnabled,
+                            recentlyMovedEntryIds = emptySet(),
+                            onFinish = ::finishTemporaryHome,
+                            onChanged = ::persist
+                        )
+                    } else {
+                        AdvancedHomeScreen(
+                            memos = activeMemos,
+                            trashedMemos = trashedMemos,
+                            temporaryMemo = temporaryMemo,
+                            oneHandModeEnabled = oneHandModeEnabled,
+                            onAddMemo = ::addMemo,
+                            onOpenMemo = ::openMemo,
+                            onOpenTemporaryMemo = { openMemo(temporaryMemo) },
+                            onTemporaryEntryMoved = { targetMemo, entry ->
+                                recentlyMovedEntryIds.remove(entry.id)
+                                recentlyMovedEntryIds.add(entry.id)
+                                persist()
+                            },
+                            onDeleteMemo = {
+                                if (!isTemporaryMemo(it)) it.trashed = true
+                                persist()
+                            },
+                            onRestoreMemo = {
+                                it.trashed = false
+                                persist()
+                            },
+                            onEraseMemo = {
+                                if (!isTemporaryMemo(it)) memos.remove(it)
+                                persist()
+                            },
+                            onSelectPatternMemo = {
+                                imageEditingMemoId = it.id
+                                currentScreen = Screen.PatternPicker
+                                persist()
+                            },
+                            onCardImageChanged = ::persist,
+                            onToggleFavorite = {
+                                it.favorite = !it.favorite
+                                persist()
+                            }
+                        )
                     }
-                )
+                }
                 Screen.Detail -> {
                     if (selectedMemo == null) {
                         currentScreen = Screen.Home
@@ -354,15 +415,30 @@ fun ShoppingMemoApp() {
                     }
                 }
                 Screen.Map -> PlaceholderScreen("地図", "地図機能はありません")
+                Screen.PatternPicker -> {
+                    if (imageEditingMemo == null) {
+                        currentScreen = Screen.Home
+                    } else {
+                        PatternPickerScreen(
+                            memo = imageEditingMemo,
+                            onBack = { currentScreen = Screen.Home },
+                            onSelect = { pattern ->
+                                imageEditingMemo.imagePattern = pattern
+                                persist()
+                                currentScreen = Screen.Home
+                            }
+                        )
+                    }
+                }
                 Screen.Settings -> SettingsScreen(
-                    memoCount = normalMemos.size,
+                    memoCount = activeMemos.size,
                     oneHandModeEnabled = oneHandModeEnabled,
                     onOneHandModeChanged = ::updateOneHandMode,
                     simpleModeEnabled = simpleModeEnabled,
                     onSimpleModeChanged = ::updateSimpleMode
                 )
                 Screen.Favorites -> FavoritesScreen(
-                    memos = normalMemos.filter { it.favorite },
+                    memos = activeMemos.filter { it.favorite },
                     onOpenMemo = ::openMemo,
                     onToggleFavorite = {
                         it.favorite = !it.favorite
@@ -370,6 +446,671 @@ fun ShoppingMemoApp() {
                     }
                 )
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AdvancedHomeScreen(
+    memos: List<ShoppingMemo>,
+    trashedMemos: List<ShoppingMemo>,
+    temporaryMemo: ShoppingMemo,
+    oneHandModeEnabled: Boolean,
+    onAddMemo: () -> Unit,
+    onOpenMemo: (ShoppingMemo) -> Unit,
+    onOpenTemporaryMemo: () -> Unit,
+    onTemporaryEntryMoved: (ShoppingMemo, ShoppingEntry) -> Unit,
+    onDeleteMemo: (ShoppingMemo) -> Unit,
+    onRestoreMemo: (ShoppingMemo) -> Unit,
+    onEraseMemo: (ShoppingMemo) -> Unit,
+    onSelectPatternMemo: (ShoppingMemo) -> Unit,
+    onCardImageChanged: () -> Unit,
+    onToggleFavorite: (ShoppingMemo) -> Unit
+) {
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val tabs = listOf("アイテム", "ゴミ箱")
+    val pagerState = rememberPagerState(pageCount = { tabs.size })
+    val activeGridState = rememberLazyGridState()
+    val trashGridState = rememberLazyGridState()
+    val memoCardBounds = remember { mutableStateMapOf<String, Rect>() }
+    val sparklingMemoIds = remember { mutableStateListOf<String>() }
+    var draggingId by remember { mutableStateOf<String?>(null) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    var dragPoint by remember { mutableStateOf(Offset.Zero) }
+    var draggedCardBounds by remember { mutableStateOf<Rect?>(null) }
+    var imageChangeBounds by remember { mutableStateOf<Rect?>(null) }
+    var cardTrashBounds by remember { mutableStateOf<Rect?>(null) }
+    var pendingImageMemo by remember { mutableStateOf<ShoppingMemo?>(null) }
+    var homeBounds by remember { mutableStateOf<Rect?>(null) }
+    var draggingTemporaryEntry by remember { mutableStateOf<ShoppingEntry?>(null) }
+    var temporaryDragPoint by remember { mutableStateOf(Offset.Zero) }
+    var homeHeightPx by remember { mutableStateOf(0) }
+    var oneHandOffsetPx by remember { mutableStateOf(0f) }
+    var oneHandFlingGeneration by remember { mutableStateOf(0) }
+    val oneHandMaxOffsetPx = (homeHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
+    val oneHandBackdropHeight = with(density) { oneHandOffsetPx.toDp() }
+    val dragActive = draggingId != null || draggingTemporaryEntry != null
+    val currentListAtTop = if (pagerState.currentPage == 0) {
+        !activeGridState.canScrollBackward
+    } else {
+        !trashGridState.canScrollBackward
+    }
+    val latestCurrentListAtTop by rememberUpdatedState(currentListAtTop)
+
+    fun moveTemporaryEntryTo(targetMemo: ShoppingMemo, entry: ShoppingEntry) {
+        temporaryMemo.entries.remove(entry)
+        val insertIndex = if (entry.checked) {
+            targetMemo.entries.size
+        } else {
+            targetMemo.entries.indexOfFirst { it.name.isBlank() || it.checked }.let { if (it >= 0) it else targetMemo.entries.size }
+        }
+        targetMemo.entries.add(insertIndex, entry)
+        ensureDisplayBlankEntry(temporaryMemo)
+        ensureDisplayBlankEntry(targetMemo)
+        onTemporaryEntryMoved(targetMemo, entry)
+        sparklingMemoIds.remove(targetMemo.id)
+        sparklingMemoIds.add(targetMemo.id)
+        scope.launch {
+            delay(5000)
+            sparklingMemoIds.remove(targetMemo.id)
+        }
+    }
+
+    fun startOneHandFling(initialVelocityY: Float) {
+        if (oneHandMaxOffsetPx <= 0f || kotlin.math.abs(initialVelocityY) < 120f) return
+        val generation = ++oneHandFlingGeneration
+        scope.launch {
+            var velocityY = initialVelocityY.coerceIn(-3200f, 3200f)
+            var lastFrameNanos = withFrameNanos { it }
+            while (generation == oneHandFlingGeneration && kotlin.math.abs(velocityY) > 30f) {
+                val frameNanos = withFrameNanos { it }
+                val deltaSeconds = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.04f)
+                lastFrameNanos = frameNanos
+                val nextOffset = (oneHandOffsetPx + velocityY * deltaSeconds).coerceIn(0f, oneHandMaxOffsetPx)
+                if (nextOffset == oneHandOffsetPx) break
+                oneHandOffsetPx = nextOffset
+                velocityY *= 0.90f
+            }
+        }
+    }
+
+    LaunchedEffect(oneHandModeEnabled) {
+        if (!oneHandModeEnabled) oneHandOffsetPx = 0f
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned {
+                homeBounds = it.boundsInWindow()
+                homeHeightPx = it.size.height
+            }
+            .pointerInput(pagerState.currentPage, dragActive) {
+                if (dragActive) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    var totalX = 0f
+                    var totalY = 0f
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        val delta = change.positionChange()
+                        totalX += delta.x
+                        totalY += delta.y
+                        if (kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
+                            if (pagerState.currentPage == 0 && totalX < -DetailBackSwipeThresholdPx) {
+                                change.consume()
+                                scope.launch { pagerState.animateScrollToPage(1) }
+                                break
+                            } else if (pagerState.currentPage == 1 && totalX > DetailBackSwipeThresholdPx) {
+                                change.consume()
+                                scope.launch { pagerState.animateScrollToPage(0) }
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+    ) {
+        if (oneHandModeEnabled && oneHandOffsetPx > 1f) {
+            OneHandModeBackdrop(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(oneHandBackdropHeight)
+                    .graphicsLayer {
+                        alpha = (0.42f + (oneHandOffsetPx / oneHandMaxOffsetPx.coerceAtLeast(1f)) * 0.46f)
+                            .coerceIn(0.42f, 0.88f)
+                    }
+            )
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { translationY = oneHandOffsetPx }
+                .pointerInput(oneHandModeEnabled, oneHandMaxOffsetPx, dragActive) {
+                    if (!oneHandModeEnabled || dragActive) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        oneHandFlingGeneration++
+                        val listAtTopWhenGestureStarted = latestCurrentListAtTop
+                        var totalX = 0f
+                        var totalY = 0f
+                        var lastVelocityY = 0f
+                        var movedContentInGesture = false
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            val delta = change.positionChange()
+                            totalX += delta.x
+                            totalY += delta.y
+                            val verticalGesture = kotlin.math.abs(totalY) > kotlin.math.abs(totalX) * 1.15f
+                            val canPullDown = delta.y > 0f && oneHandOffsetPx < oneHandMaxOffsetPx && listAtTopWhenGestureStarted
+                            val canPushUp = delta.y < 0f && oneHandOffsetPx > 0f
+                            if (verticalGesture && (canPullDown || canPushUp)) {
+                                val boostedDeltaY = delta.y * OneHandScrollSpeedMultiplier
+                                val nextOffset = (oneHandOffsetPx + boostedDeltaY).coerceIn(0f, oneHandMaxOffsetPx)
+                                if (nextOffset != oneHandOffsetPx) {
+                                    oneHandOffsetPx = nextOffset
+                                    lastVelocityY = boostedDeltaY * 60f
+                                    movedContentInGesture = true
+                                    change.consume()
+                                }
+                            }
+                        }
+                        if (movedContentInGesture) startOneHandFling(lastVelocityY)
+                    }
+                }
+        ) {
+            Header(title = "買い物メモ")
+            HomeTabRow(
+                tabs = tabs,
+                selectedPage = pagerState.currentPage,
+                onSelect = { page -> scope.launch { pagerState.animateScrollToPage(page) } }
+            )
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.weight(1f),
+                userScrollEnabled = false
+            ) { page ->
+                if (page == 0) {
+                    HomeItemsPage(
+                        memos = memos,
+                        temporaryMemo = temporaryMemo,
+                        gridState = activeGridState,
+                        memoCardBounds = memoCardBounds,
+                        sparklingMemoIds = sparklingMemoIds,
+                        draggingId = draggingId,
+                        dragOffset = dragOffset,
+                        onDragStart = { memo, start, bounds ->
+                            draggingId = memo.id
+                            dragOffset = Offset.Zero
+                            draggedCardBounds = bounds
+                            dragPoint = if (bounds == null) start else Offset(bounds.left + start.x, bounds.top + start.y)
+                        },
+                        onDrag = { amount ->
+                            dragOffset += amount
+                            dragPoint += amount
+                        },
+                        onDragEnd = {
+                            val memo = memos.firstOrNull { it.id == draggingId }
+                            when {
+                                memo != null && imageChangeBounds?.contains(dragPoint) == true -> pendingImageMemo = memo
+                                memo != null && cardTrashBounds?.contains(dragPoint) == true -> onDeleteMemo(memo)
+                            }
+                            draggingId = null
+                            dragOffset = Offset.Zero
+                        },
+                        onDragCancel = {
+                            draggingId = null
+                            dragOffset = Offset.Zero
+                        },
+                        onOpenMemo = onOpenMemo,
+                        onToggleFavorite = onToggleFavorite,
+                        onAddMemo = onAddMemo,
+                        showCardDropTargets = draggingId != null,
+                        onImageTargetPositioned = { imageChangeBounds = it },
+                        onTrashTargetPositioned = { cardTrashBounds = it },
+                        draggingTemporaryEntryId = draggingTemporaryEntry?.id,
+                        onOpenTemporaryMemo = onOpenTemporaryMemo,
+                        onTemporaryDragStart = { entry, start, bounds ->
+                            draggingTemporaryEntry = entry
+                            temporaryDragPoint = if (bounds == null) start else Offset(bounds.left + start.x, bounds.top + start.y)
+                        },
+                        onTemporaryDrag = { delta -> temporaryDragPoint += delta },
+                        onTemporaryDragEnd = {
+                            val entry = draggingTemporaryEntry
+                            val target = memos.firstOrNull { memo ->
+                                memoCardBounds[memo.id]?.contains(temporaryDragPoint) == true
+                            }
+                            if (entry != null && target != null) {
+                                moveTemporaryEntryTo(target, entry)
+                            }
+                            draggingTemporaryEntry = null
+                        },
+                        onTemporaryDragCancel = { draggingTemporaryEntry = null }
+                    )
+                } else {
+                    HomeTrashPage(
+                        memos = trashedMemos,
+                        gridState = trashGridState,
+                        onRestoreMemo = onRestoreMemo,
+                        onEraseMemo = onEraseMemo
+                    )
+                }
+            }
+        }
+
+        draggingTemporaryEntry?.let { entry ->
+            TemporaryFloatingEntry(
+                entry = entry,
+                position = Offset(
+                    x = temporaryDragPoint.x - (homeBounds?.left ?: 0f) - 84f,
+                    y = temporaryDragPoint.y - (homeBounds?.top ?: 0f) - 28f
+                ),
+                modifier = Modifier.zIndex(10f)
+            )
+        }
+    }
+
+    pendingImageMemo?.let { memo ->
+        ImageChangeChoiceDialog(
+            memo = memo,
+            onDismiss = { pendingImageMemo = null },
+            onCamera = {
+                memo.imagePattern = 8
+                onCardImageChanged()
+                pendingImageMemo = null
+            },
+            onFolder = {
+                memo.imagePattern = 9
+                onCardImageChanged()
+                pendingImageMemo = null
+            },
+            onPattern = {
+                pendingImageMemo = null
+                onSelectPatternMemo(memo)
+            }
+        )
+    }
+}
+
+@Composable
+private fun HomeTabRow(
+    tabs: List<String>,
+    selectedPage: Int,
+    onSelect: (Int) -> Unit
+) {
+    Row(modifier = Modifier.fillMaxWidth().height(50.dp)) {
+        tabs.forEachIndexed { index, title ->
+            val selected = selectedPage == index
+            val selectedTrashTab = selected && index == 1
+            Column(
+                modifier = Modifier
+                    .weight(if (index == 0) 2f else 1f)
+                    .fillMaxHeight()
+                    .background(if (selectedTrashTab) TrashTabSelectedColor else Color.White)
+                    .clickable { onSelect(index) },
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = title,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = when {
+                        selectedTrashTab -> Color.White
+                        selected -> Color(0xFF1976D2)
+                        else -> Color(0xFF777777)
+                    }
+                )
+                Spacer(Modifier.height(9.dp))
+                Box(
+                    modifier = Modifier
+                        .height(3.dp)
+                        .fillMaxWidth()
+                        .background(
+                            when {
+                                selectedTrashTab -> Color.White
+                                selected -> Color(0xFF1565C0)
+                                else -> Color.Transparent
+                            }
+                        )
+                )
+            }
+        }
+    }
+    Divider(color = Color(0xFFE0E0E0))
+}
+
+@Composable
+private fun HomeItemsPage(
+    memos: List<ShoppingMemo>,
+    temporaryMemo: ShoppingMemo,
+    gridState: LazyGridState,
+    memoCardBounds: MutableMap<String, Rect>,
+    sparklingMemoIds: List<String>,
+    draggingId: String?,
+    dragOffset: Offset,
+    onDragStart: (ShoppingMemo, Offset, Rect?) -> Unit,
+    onDrag: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
+    onOpenMemo: (ShoppingMemo) -> Unit,
+    onToggleFavorite: (ShoppingMemo) -> Unit,
+    onAddMemo: () -> Unit,
+    showCardDropTargets: Boolean,
+    onImageTargetPositioned: (Rect) -> Unit,
+    onTrashTargetPositioned: (Rect) -> Unit,
+    draggingTemporaryEntryId: String?,
+    onOpenTemporaryMemo: () -> Unit,
+    onTemporaryDragStart: (ShoppingEntry, Offset, Rect?) -> Unit,
+    onTemporaryDrag: (Offset) -> Unit,
+    onTemporaryDragEnd: () -> Unit,
+    onTemporaryDragCancel: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(10.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .padding(end = 6.dp)
+        ) {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(1),
+                state = gridState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentPadding = PaddingValues(bottom = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(memos, key = { it.id }) { memo ->
+                    var cardBounds by remember { mutableStateOf<Rect?>(null) }
+                    val isDragging = draggingId == memo.id
+                    MemoCard(
+                        memo = memo,
+                        sparkling = sparklingMemoIds.contains(memo.id),
+                        modifier = Modifier
+                            .graphicsLayer {
+                                translationX = if (isDragging) dragOffset.x else 0f
+                                translationY = if (isDragging) dragOffset.y else 0f
+                                scaleX = if (isDragging) 1.05f else 1f
+                                scaleY = if (isDragging) 1.05f else 1f
+                                shadowElevation = if (isDragging) 18f else 0f
+                            }
+                            .onGloballyPositioned {
+                                val bounds = it.boundsInWindow()
+                                cardBounds = bounds
+                                memoCardBounds[memo.id] = bounds
+                            }
+                            .pointerInput(memo.id) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = { start -> onDragStart(memo, start, cardBounds) },
+                                    onDrag = { change, amount ->
+                                        change.consume()
+                                        onDrag(amount)
+                                    },
+                                    onDragEnd = onDragEnd,
+                                    onDragCancel = onDragCancel
+                                )
+                            },
+                        onClick = { if (draggingId == null) onOpenMemo(memo) },
+                        onToggleFavorite = { onToggleFavorite(memo) }
+                    )
+                }
+            }
+            HomeFixedActionButton(
+                icon = "+",
+                label = "追加",
+                height = 78.dp,
+                containerColor = Color(0xFFEAF4FF),
+                contentColor = Color(0xFF1976D2),
+                onClick = onAddMemo,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        Box(
+            modifier = Modifier
+                .width(1.dp)
+                .fillMaxHeight()
+                .background(Color(0xFFBDBDBD))
+        )
+        if (showCardDropTargets) {
+            HomeCardDropTargets(
+                modifier = Modifier
+                    .padding(start = 6.dp)
+                    .weight(1f)
+                    .fillMaxHeight(),
+                onImageTargetPositioned = onImageTargetPositioned,
+                onTrashTargetPositioned = onTrashTargetPositioned
+            )
+        } else {
+            TemporaryMemoPanel(
+                memo = temporaryMemo,
+                draggingEntryId = draggingTemporaryEntryId,
+                modifier = Modifier
+                    .padding(start = 6.dp)
+                    .weight(1f)
+                    .fillMaxHeight(),
+                onOpen = onOpenTemporaryMemo,
+                onDragStart = onTemporaryDragStart,
+                onDrag = onTemporaryDrag,
+                onDragEnd = onTemporaryDragEnd,
+                onDragCancel = onTemporaryDragCancel
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeCardDropTargets(
+    modifier: Modifier = Modifier,
+    onImageTargetPositioned: (Rect) -> Unit,
+    onTrashTargetPositioned: (Rect) -> Unit
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        HomeDropTargetCard(
+            title = "Image 変更",
+            icon = "画像",
+            containerColor = Color(0xFFE3F2FD),
+            contentColor = Color(0xFF1565C0),
+            modifier = Modifier
+                .weight(1f)
+                .onGloballyPositioned { onImageTargetPositioned(it.boundsInWindow()) }
+        )
+        HomeDropTargetCard(
+            title = "ゴミ箱",
+            icon = "削除",
+            containerColor = Color(0xFFFFEBEE),
+            contentColor = Color(0xFFD32F2F),
+            modifier = Modifier
+                .weight(1f)
+                .onGloballyPositioned { onTrashTargetPositioned(it.boundsInWindow()) }
+        )
+    }
+}
+
+@Composable
+private fun HomeDropTargetCard(
+    title: String,
+    icon: String,
+    containerColor: Color,
+    contentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(2.dp, contentColor.copy(alpha = 0.35f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(icon, color = contentColor, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(10.dp))
+            Text(title, color = contentColor, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun HomeTrashPage(
+    memos: List<ShoppingMemo>,
+    gridState: LazyGridState,
+    onRestoreMemo: (ShoppingMemo) -> Unit,
+    onEraseMemo: (ShoppingMemo) -> Unit
+) {
+    if (memos.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            Text("ゴミ箱は空です。", color = Color(0xFF888888), fontSize = 16.sp, modifier = Modifier.padding(top = 44.dp))
+        }
+        return
+    }
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(1),
+        state = gridState,
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(10.dp),
+        contentPadding = PaddingValues(bottom = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        items(memos, key = { it.id }) { memo ->
+            DeletedMemoCard(
+                memo = memo,
+                onRestore = { onRestoreMemo(memo) },
+                onErase = { onEraseMemo(memo) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeletedMemoCard(
+    memo: ShoppingMemo,
+    onRestore: () -> Unit,
+    onErase: () -> Unit
+) {
+    val activeCount = memo.entries.count { !it.checked && it.name.isNotBlank() }
+    val doneCount = memo.entries.count { it.checked && it.name.isNotBlank() }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, Color(0xFFE0E0E0)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(74.dp)
+                    .background(Color(0xFFFFEBEE), RoundedCornerShape(8.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                ShoppingPatternImage(pattern = memo.imagePattern, modifier = Modifier.size(56.dp))
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 10.dp)
+            ) {
+                Text(
+                    memo.title.ifBlank { "タイトル未入力" },
+                    color = Color(0xFF333333),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text("未購入 $activeCount 件 / 完了 $doneCount 件", color = Color(0xFF777777), fontSize = 13.sp)
+            }
+            TextButton(onClick = onRestore) {
+                Text("戻す", color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
+            }
+            TextButton(onClick = onErase) {
+                Text("消去", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImageChangeChoiceDialog(
+    memo: ShoppingMemo,
+    onDismiss: () -> Unit,
+    onCamera: () -> Unit,
+    onFolder: () -> Unit,
+    onPattern: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${memo.title.ifBlank { "カード" }} の画像変更") },
+        text = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                ImageChoiceButton("カメラ", "撮影", Color(0xFFE3F2FD), Color(0xFF1565C0), Modifier.weight(1f), onCamera)
+                ImageChoiceButton("フォルダ", "写真", Color(0xFFE8F5E9), Color(0xFF2E7D32), Modifier.weight(1f), onFolder)
+                ImageChoiceButton("パターン", "10種", Color(0xFFFFF8E1), Color(0xFFF57F17), Modifier.weight(1f), onPattern)
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("キャンセル") }
+        }
+    )
+}
+
+@Composable
+private fun ImageChoiceButton(
+    title: String,
+    caption: String,
+    containerColor: Color,
+    contentColor: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = modifier
+            .height(112.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, contentColor.copy(alpha = 0.4f)),
+        colors = CardDefaults.cardColors(containerColor = containerColor)
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(title, color = contentColor, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            Text(caption, color = contentColor.copy(alpha = 0.78f), fontSize = 13.sp)
         }
     }
 }
@@ -596,7 +1337,7 @@ private fun TemporaryMemoPanel(
     val activeEntries = memo.entries.filter { !it.checked && it.name.isNotBlank() }
     val doneEntries = memo.entries.filter { it.checked && it.name.isNotBlank() }
     Card(
-        modifier = modifier,
+        modifier = modifier.clickable(onClick = onOpen),
         shape = RoundedCornerShape(8.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
         border = BorderStroke(1.dp, Color(0xFFC8C8C8)),
@@ -617,7 +1358,14 @@ private fun TemporaryMemoPanel(
                 )
             }
             Column(Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) {
-                Text("テンポラリ", color = Color(0xFFD32F2F), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    text = memo.title.ifBlank { TemporaryMemoTitle },
+                    color = Color(0xFFD32F2F),
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
                 Text("未購入 ${activeEntries.size} 件", color = Color(0xFF2E7D32), fontSize = 13.sp)
                 Text("完了 ${doneEntries.size} 件", color = Color(0xFF333333), fontSize = 13.sp)
             }
@@ -663,16 +1411,6 @@ private fun TemporaryMemoPanel(
                     }
                 }
             }
-            HomeFixedActionButton(
-                icon = "↗",
-                label = "開く",
-                containerColor = Color(0xFFFFF3F3),
-                contentColor = Color(0xFFD32F2F),
-                onClick = onOpen,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 4.dp)
-            )
         }
     }
 }
@@ -684,11 +1422,12 @@ private fun HomeFixedActionButton(
     containerColor: Color,
     contentColor: Color,
     modifier: Modifier = Modifier,
+    height: Dp = 52.dp,
     onClick: () -> Unit
 ) {
     Button(
         onClick = onClick,
-        modifier = modifier.height(52.dp),
+        modifier = modifier.height(height),
         shape = RoundedCornerShape(8.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = containerColor,
@@ -818,6 +1557,7 @@ private fun MemoCard(
                 contentAlignment = Alignment.Center
             ) {
                 Text("🛒", fontSize = 76.sp)
+                ShoppingPatternImage(pattern = memo.imagePattern, modifier = Modifier.size(104.dp))
                 IconButton(
                     onClick = onToggleFavorite,
                     modifier = Modifier
@@ -871,6 +1611,111 @@ private fun AddMemoCard(compact: Boolean, onClick: () -> Unit) {
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("+", color = Color(0xFF1976D2), fontSize = if (compact) 64.sp else 96.sp)
+        }
+    }
+}
+
+private data class ShoppingImagePattern(
+    val name: String,
+    val symbol: String,
+    val accent: String,
+    val background: Color,
+    val foreground: Color
+)
+
+private val ShoppingImagePatterns = listOf(
+    ShoppingImagePattern("赤いカート", "🛒", "＋", Color(0xFFFFEBEE), Color(0xFFD32F2F)),
+    ShoppingImagePattern("野菜かご", "🥬", "🥕", Color(0xFFE8F5E9), Color(0xFF2E7D32)),
+    ShoppingImagePattern("朝食", "🍞", "🥛", Color(0xFFFFF8E1), Color(0xFFF57F17)),
+    ShoppingImagePattern("魚", "🐟", "氷", Color(0xFFE1F5FE), Color(0xFF0277BD)),
+    ShoppingImagePattern("フルーツ", "🍎", "🍌", Color(0xFFFFF3E0), Color(0xFFE65100)),
+    ShoppingImagePattern("米袋", "🍚", "米", Color(0xFFF3E5F5), Color(0xFF6A1B9A)),
+    ShoppingImagePattern("日用品", "🧴", "✓", Color(0xFFE0F2F1), Color(0xFF00796B)),
+    ShoppingImagePattern("冷凍", "❄", "箱", Color(0xFFE3F2FD), Color(0xFF1565C0)),
+    ShoppingImagePattern("カメラ", "📷", "撮", Color(0xFFFCE4EC), Color(0xFFC2185B)),
+    ShoppingImagePattern("写真", "🖼", "選", Color(0xFFEDE7F6), Color(0xFF512DA8))
+)
+
+@Composable
+private fun ShoppingPatternImage(pattern: Int, modifier: Modifier = Modifier) {
+    val item = ShoppingImagePatterns[((pattern % ShoppingImagePatterns.size) + ShoppingImagePatterns.size) % ShoppingImagePatterns.size]
+    Box(
+        modifier = modifier
+            .background(item.background, RoundedCornerShape(18.dp))
+            .padding(8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(item.symbol, fontSize = 42.sp)
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .background(Color.White.copy(alpha = 0.88f), CircleShape)
+                .padding(horizontal = 6.dp, vertical = 2.dp)
+        ) {
+            Text(item.accent, color = item.foreground, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun PatternPickerScreen(
+    memo: ShoppingMemo,
+    onBack: () -> Unit,
+    onSelect: (Int) -> Unit
+) {
+    Column(Modifier.fillMaxSize()) {
+        Header(
+            title = "画像パターン",
+            trailing = {
+                TextButton(onClick = onBack) {
+                    Text("戻る", color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+        Text(
+            text = memo.title.ifBlank { "カード" },
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            color = Color(0xFF555555),
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(ShoppingImagePatterns.indices.toList(), key = { it }) { index ->
+                val item = ShoppingImagePatterns[index]
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(160.dp)
+                        .clickable { onSelect(index) },
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(
+                        width = if (memo.imagePattern == index) 3.dp else 1.dp,
+                        color = if (memo.imagePattern == index) Color(0xFF1976D2) else Color(0xFFE0E0E0)
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 5.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White)
+                ) {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        ShoppingPatternImage(pattern = index, modifier = Modifier.size(92.dp))
+                        Spacer(Modifier.height(10.dp))
+                        Text(item.name, color = Color(0xFF333333), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
     }
 }
