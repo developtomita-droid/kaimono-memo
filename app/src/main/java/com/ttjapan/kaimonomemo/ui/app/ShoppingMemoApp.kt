@@ -20,7 +20,9 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -843,8 +845,6 @@ private fun HomeItemsPage(
     onTemporaryDragEnd: () -> Unit,
     onTemporaryDragCancel: () -> Unit
 ) {
-    val scope = rememberCoroutineScope()
-    val scrollDistancePx = with(LocalDensity.current) { 360.dp.toPx() }
     val controlHeight = 90.dp
 
     Box(
@@ -937,7 +937,7 @@ private fun HomeItemsPage(
         HomeLeftControlBoundary(
             modifier = Modifier
                 .matchParentSize()
-                .zIndex(20f),
+                .zIndex(30f),
             controlHeight = controlHeight
         )
         HomeLeftBottomControls(
@@ -947,8 +947,7 @@ private fun HomeItemsPage(
                 .height(controlHeight)
                 .zIndex(25f),
             onAddMemo = onAddMemo,
-            onScrollUp = { scope.launch { gridState.scrollBy(-scrollDistancePx) } },
-            onScrollDown = { scope.launch { gridState.scrollBy(scrollDistancePx) } }
+            gridState = gridState
         )
     }
 }
@@ -1476,21 +1475,21 @@ private fun HomeLeftControlBoundary(
     controlHeight: Dp
 ) {
     Canvas(modifier) {
-        val stroke = 1.5.dp.toPx()
+        val stroke = 3.dp.toPx()
+        val radius = 12.dp.toPx()
         val centerX = size.width / 2f
         val controlTop = (size.height - controlHeight.toPx()).coerceAtLeast(0f)
-        val color = Color(0xFF9E9E9E)
-        drawLine(
-            color = color,
-            start = Offset(centerX, 0f),
-            end = Offset(centerX, controlTop),
-            strokeWidth = stroke
-        )
-        drawLine(
-            color = color,
-            start = Offset(centerX, controlTop),
-            end = Offset(size.width, controlTop),
-            strokeWidth = stroke
+        val cornerStartY = (controlTop - radius).coerceAtLeast(0f)
+        val path = Path().apply {
+            moveTo(centerX, 0f)
+            lineTo(centerX, cornerStartY)
+            quadraticTo(centerX, controlTop, centerX + radius, controlTop)
+            lineTo(size.width, controlTop)
+        }
+        drawPath(
+            path = path,
+            color = Color.Black,
+            style = Stroke(width = stroke)
         )
     }
 }
@@ -1499,8 +1498,7 @@ private fun HomeLeftControlBoundary(
 private fun HomeLeftBottomControls(
     modifier: Modifier = Modifier,
     onAddMemo: () -> Unit,
-    onScrollUp: () -> Unit,
-    onScrollDown: () -> Unit
+    gridState: LazyGridState
 ) {
     Row(
         modifier = modifier
@@ -1521,42 +1519,41 @@ private fun HomeLeftBottomControls(
         Column(
             modifier = Modifier
                 .width(82.dp)
-                .fillMaxHeight(),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+                .fillMaxHeight()
         ) {
-            HomeScrollButton(
-                text = "↑",
-                modifier = Modifier.weight(1f),
-                onClick = onScrollUp
-            )
-            HomeScrollButton(
-                text = "↓",
-                modifier = Modifier.weight(1f),
-                onClick = onScrollDown
+            HomeScrollFlickArea(
+                gridState = gridState,
+                modifier = Modifier.fillMaxSize()
             )
         }
     }
 }
 
 @Composable
-private fun HomeScrollButton(
-    text: String,
+private fun HomeScrollFlickArea(
+    gridState: LazyGridState,
     modifier: Modifier = Modifier,
-    onClick: () -> Unit
 ) {
-    Button(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth(),
+    Card(
+        modifier = modifier.scrollable(
+            state = gridState,
+            orientation = Orientation.Vertical
+        ),
         shape = RoundedCornerShape(6.dp),
-        colors = ButtonDefaults.buttonColors(
+        colors = CardDefaults.cardColors(
             containerColor = Color(0xFFFFC1D8),
-            contentColor = Color.Black
         ),
         border = BorderStroke(1.dp, Color(0xFFD81B60)),
-        elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
-        contentPadding = PaddingValues(0.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
     ) {
-        Text(text, fontSize = 26.sp, fontWeight = FontWeight.Bold, lineHeight = 26.sp)
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceEvenly
+        ) {
+            Text("↑", color = Color.Black, fontSize = 28.sp, fontWeight = FontWeight.Bold, lineHeight = 28.sp)
+            Text("↓", color = Color.Black, fontSize = 28.sp, fontWeight = FontWeight.Bold, lineHeight = 28.sp)
+        }
     }
 }
 
