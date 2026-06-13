@@ -66,6 +66,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -127,10 +129,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import com.ttjapan.kaimonomemo.R
+import com.ttjapan.kaimonomemo.data.MicrophoneSettings
 import com.ttjapan.kaimonomemo.data.assignDefaultTitleIfBlank
+import com.ttjapan.kaimonomemo.data.loadMicrophoneSettings
 import com.ttjapan.kaimonomemo.data.loadMemos
 import com.ttjapan.kaimonomemo.data.loadOneHandModeEnabled
 import com.ttjapan.kaimonomemo.data.loadSimpleModeEnabled
+import com.ttjapan.kaimonomemo.data.saveMicrophoneSettings
 import com.ttjapan.kaimonomemo.data.saveMemos
 import com.ttjapan.kaimonomemo.data.saveOneHandModeEnabled
 import com.ttjapan.kaimonomemo.data.saveSimpleModeEnabled
@@ -148,6 +153,7 @@ private enum class Screen {
     PatternPicker,
     Map,
     Settings,
+    MicrophoneSettings,
     Favorites
 }
 
@@ -281,6 +287,7 @@ fun ShoppingMemoApp() {
     var imageEditingMemoId by remember { mutableStateOf<String?>(null) }
     var oneHandModeEnabled by remember { mutableStateOf(loadOneHandModeEnabled(context)) }
     var simpleModeEnabled by remember { mutableStateOf(initialSimpleModeEnabled) }
+    var microphoneSettings by remember { mutableStateOf(loadMicrophoneSettings(context)) }
     var homeTopScrollRequest by remember { mutableStateOf(0) }
     val recentlyMovedEntryIds = remember { mutableStateListOf<String>() }
     val selectedMemo = memos.firstOrNull { it.id == selectedMemoId }
@@ -316,6 +323,10 @@ fun ShoppingMemoApp() {
         applyTemporaryTitleForMode(temporaryMemo, enabled)
         saveSimpleModeEnabled(context, enabled)
         persist()
+    }
+    fun updateMicrophoneSettings(settings: MicrophoneSettings) {
+        microphoneSettings = settings
+        saveMicrophoneSettings(context, settings)
     }
     fun openMemo(memo: ShoppingMemo) {
         selectedMemoId = memo.id
@@ -355,18 +366,24 @@ fun ShoppingMemoApp() {
     BackHandler(enabled = currentScreen == Screen.Home) {
         // ホームでの戻るジェスチャーではアプリを終了しない。
     }
+    BackHandler(enabled = currentScreen == Screen.Settings) {
+        currentScreen = Screen.Home
+    }
     BackHandler(enabled = currentScreen == Screen.Detail) {
         finishDetail()
     }
     BackHandler(enabled = currentScreen == Screen.PatternPicker) {
         currentScreen = Screen.Home
     }
+    BackHandler(enabled = currentScreen == Screen.MicrophoneSettings) {
+        currentScreen = Screen.Settings
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         bottomBar = {
             BottomIconBar(
-                screen = currentScreen,
+                screen = if (currentScreen == Screen.MicrophoneSettings) Screen.Settings else currentScreen,
                 onHome = {
                     if (currentScreen == Screen.Detail) finishDetail() else currentScreen = Screen.Home
                 },
@@ -469,7 +486,15 @@ fun ShoppingMemoApp() {
                     oneHandModeEnabled = oneHandModeEnabled,
                     onOneHandModeChanged = ::updateOneHandMode,
                     simpleModeEnabled = simpleModeEnabled,
-                    onSimpleModeChanged = ::updateSimpleMode
+                    onSimpleModeChanged = ::updateSimpleMode,
+                    microphoneOperationEnabled = microphoneSettings.operationEnabled,
+                    onOpenMicrophoneSettings = { currentScreen = Screen.MicrophoneSettings }
+                )
+                Screen.MicrophoneSettings -> MicrophoneSettingsScreen(
+                    settings = microphoneSettings,
+                    oneHandModeEnabled = oneHandModeEnabled,
+                    onSettingsChanged = ::updateMicrophoneSettings,
+                    onBack = { currentScreen = Screen.Settings }
                 )
                 Screen.Favorites -> FavoritesScreen(
                     memos = activeMemos.filter { it.favorite },
@@ -4541,35 +4566,385 @@ private fun SettingsScreen(
     oneHandModeEnabled: Boolean,
     onOneHandModeChanged: (Boolean) -> Unit,
     simpleModeEnabled: Boolean,
-    onSimpleModeChanged: (Boolean) -> Unit
+    onSimpleModeChanged: (Boolean) -> Unit,
+    microphoneOperationEnabled: Boolean,
+    onOpenMicrophoneSettings: () -> Unit
 ) {
-    Column(Modifier.fillMaxSize()) {
-        Header("設定")
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("モード", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF444444))
-            SettingModeRow(
-                title = "かんたんモード",
-                description = "基本操作を中心にしたモードです。",
-                selected = simpleModeEnabled,
-                onClick = { onSimpleModeChanged(true) }
-            )
-            SettingModeRow(
-                title = "高機能モード",
-                description = "より細かい操作を使うためのモードです。",
-                selected = !simpleModeEnabled,
-                onClick = { onSimpleModeChanged(false) }
-            )
-            SettingToggleRow(
-                title = "片手だけで操作可能モード",
-                description = "一覧を下半分までスクロールできるようにし、片手で操作しやすくします。",
-                checked = oneHandModeEnabled,
-                onCheckedChange = onOneHandModeChanged
-            )
-            SettingRow("保存方式", "端末内保存")
-            SettingRow("登録リスト数", "${memoCount}件")
-            SettingRow("通信", "サーバーアクセスなし")
+    val listState = rememberLazyListState()
+    OneHandSettingsFrame(
+        oneHandModeEnabled = oneHandModeEnabled,
+        listAtTop = !listState.canScrollBackward
+    ) { contentModifier ->
+        Column(contentModifier) {
+            Header("設定")
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                item {
+                    Text("モード", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF444444))
+                }
+                item {
+                    SettingModeRow(
+                        title = "かんたんモード",
+                        description = "基本操作を中心にしたモードです。",
+                        selected = simpleModeEnabled,
+                        onClick = { onSimpleModeChanged(true) }
+                    )
+                }
+                item {
+                    SettingModeRow(
+                        title = "高機能モード",
+                        description = "より細かい操作を使うためのモードです。",
+                        selected = !simpleModeEnabled,
+                        onClick = { onSimpleModeChanged(false) }
+                    )
+                }
+                item {
+                    SettingToggleRow(
+                        title = "片手だけで操作可能",
+                        description = "一覧を下半分までスクロールできるようにし、片手で操作しやすくします。",
+                        checked = oneHandModeEnabled,
+                        onCheckedChange = onOneHandModeChanged
+                    )
+                }
+                item {
+                    SettingNavigationRow(
+                        title = "マイク設定",
+                        description = "マイクでアプリを操作するための指示語の登録などができます。",
+                        onClick = onOpenMicrophoneSettings
+                    )
+                }
+            }
         }
     }
+}
+
+private data class MicrophoneCommandRow(
+    val key: String,
+    val action: String
+)
+
+private val MicrophoneStopOptions = listOf(
+    0 to "停止せず",
+    1 to "1分",
+    3 to "3分",
+    5 to "5分",
+    10 to "10分"
+)
+
+private val MicrophoneCommandRows = listOf(
+    MicrophoneCommandRow("home", "ホーム"),
+    MicrophoneCommandRow("showTrash", "ゴミ箱を表示"),
+    MicrophoneCommandRow("scrollUp", "スクロール上"),
+    MicrophoneCommandRow("scrollDown", "スクロール下"),
+    MicrophoneCommandRow("stop", "ストップ"),
+    MicrophoneCommandRow("focusNumber", "番号フォーカス"),
+    MicrophoneCommandRow("complete", "完了"),
+    MicrophoneCommandRow("delete", "削除"),
+    MicrophoneCommandRow("restore", "戻す"),
+    MicrophoneCommandRow("readAloud", "読み上げ"),
+    MicrophoneCommandRow("finishMic", "マイク停止"),
+    MicrophoneCommandRow("exitApp", "アプリ終了")
+)
+
+@Composable
+private fun MicrophoneSettingsScreen(
+    settings: MicrophoneSettings,
+    oneHandModeEnabled: Boolean,
+    onSettingsChanged: (MicrophoneSettings) -> Unit,
+    onBack: () -> Unit
+) {
+    fun updateCommands(key: String, value: String) {
+        onSettingsChanged(settings.copy(commands = settings.commands + (key to value)))
+    }
+
+    val listState = rememberLazyListState()
+    OneHandSettingsFrame(
+        oneHandModeEnabled = oneHandModeEnabled,
+        listAtTop = !listState.canScrollBackward
+    ) { contentModifier ->
+        Column(contentModifier) {
+            Header(
+                title = "マイク設定",
+                trailing = {
+                    TextButton(onClick = onBack) {
+                        Text("戻る", color = Color(0xFF1976D2), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            )
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                item {
+                    SettingToggleRow(
+                        title = "起動直後にマイクを有効にする",
+                        description = "アプリ起動後、自動で音声入力を開始します。",
+                        checked = settings.startOnLaunch,
+                        onCheckedChange = { onSettingsChanged(settings.copy(startOnLaunch = it)) }
+                    )
+                }
+                item {
+                    MicrophoneStopTimeoutDropdown(
+                        selectedMinutes = settings.stopTimeoutMinutes,
+                        onSelected = { onSettingsChanged(settings.copy(stopTimeoutMinutes = it)) }
+                    )
+                }
+                item {
+                    SettingToggleRow(
+                        title = "マイク操作",
+                        description = "指示語を認識してアプリ操作に使います。",
+                        checked = settings.operationEnabled,
+                        onCheckedChange = { onSettingsChanged(settings.copy(operationEnabled = it)) }
+                    )
+                }
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "動作",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF666666),
+                            modifier = Modifier.weight(0.42f)
+                        )
+                        Text(
+                            "指示語",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF666666),
+                            modifier = Modifier.weight(0.58f)
+                        )
+                    }
+                }
+                items(MicrophoneCommandRows, key = { it.key }) { row ->
+                    MicrophoneCommandEditorRow(
+                        action = row.action,
+                        phrase = settings.commands[row.key].orEmpty(),
+                        onPhraseChanged = { updateCommands(row.key, it) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OneHandSettingsFrame(
+    oneHandModeEnabled: Boolean,
+    listAtTop: Boolean,
+    content: @Composable (Modifier) -> Unit
+) {
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    var screenHeightPx by remember { mutableStateOf(0) }
+    var oneHandOffsetPx by remember { mutableStateOf(0f) }
+    var oneHandFlingGeneration by remember { mutableStateOf(0) }
+    val oneHandMaxOffsetPx = (screenHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
+    val oneHandBackdropHeight = with(density) { oneHandOffsetPx.toDp() }
+    val latestListAtTop by rememberUpdatedState(listAtTop)
+
+    LaunchedEffect(oneHandModeEnabled) {
+        if (!oneHandModeEnabled) oneHandOffsetPx = 0f
+    }
+
+    fun startOneHandFling(initialVelocityY: Float) {
+        if (oneHandMaxOffsetPx <= 0f || kotlin.math.abs(initialVelocityY) < 120f) return
+        val generation = ++oneHandFlingGeneration
+        scope.launch {
+            var velocityY = initialVelocityY.coerceIn(-3200f, 3200f)
+            var lastFrameNanos = withFrameNanos { it }
+            while (generation == oneHandFlingGeneration && kotlin.math.abs(velocityY) > 30f) {
+                val frameNanos = withFrameNanos { it }
+                val deltaSeconds = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.04f)
+                lastFrameNanos = frameNanos
+                val nextOffset = (oneHandOffsetPx + velocityY * deltaSeconds).coerceIn(0f, oneHandMaxOffsetPx)
+                if (nextOffset == oneHandOffsetPx) break
+                oneHandOffsetPx = nextOffset
+                velocityY *= 0.90f
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { screenHeightPx = it.size.height }
+    ) {
+        if (oneHandModeEnabled && oneHandOffsetPx > 1f) {
+            OneHandModeBackdrop(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(oneHandBackdropHeight)
+                    .graphicsLayer {
+                        alpha = (0.42f + (oneHandOffsetPx / oneHandMaxOffsetPx.coerceAtLeast(1f)) * 0.46f)
+                            .coerceIn(0.42f, 0.88f)
+                    }
+            )
+        }
+        content(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { translationY = oneHandOffsetPx }
+                .pointerInput(oneHandModeEnabled, oneHandMaxOffsetPx) {
+                    if (!oneHandModeEnabled) return@pointerInput
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        oneHandFlingGeneration++
+                        val listAtTopWhenGestureStarted = latestListAtTop
+                        var totalX = 0f
+                        var totalY = 0f
+                        var lastVelocityY = 0f
+                        var movedContentInGesture = false
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull() ?: break
+                            if (!change.pressed) break
+                            val delta = change.positionChange()
+                            totalX += delta.x
+                            totalY += delta.y
+                            val verticalGesture = kotlin.math.abs(totalY) > kotlin.math.abs(totalX) * 1.15f
+                            val canPullDown = delta.y > 0f && oneHandOffsetPx < oneHandMaxOffsetPx && listAtTopWhenGestureStarted
+                            val canPushUp = delta.y < 0f && oneHandOffsetPx > 0f
+                            if (verticalGesture && (canPullDown || canPushUp)) {
+                                val boostedDeltaY = delta.y * OneHandScrollSpeedMultiplier
+                                val nextOffset = (oneHandOffsetPx + boostedDeltaY).coerceIn(0f, oneHandMaxOffsetPx)
+                                if (nextOffset != oneHandOffsetPx) {
+                                    oneHandOffsetPx = nextOffset
+                                    lastVelocityY = boostedDeltaY * 60f
+                                    movedContentInGesture = true
+                                    change.consume()
+                                }
+                            }
+                        }
+                        if (movedContentInGesture) startOneHandFling(lastVelocityY)
+                    }
+                }
+        )
+    }
+}
+
+@Composable
+private fun MicrophoneStopTimeoutDropdown(
+    selectedMinutes: Int,
+    onSelected: (Int) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = MicrophoneStopOptions.firstOrNull { it.first == selectedMinutes }?.second
+        ?: MicrophoneStopOptions.first().second
+    Column {
+        Text("マイク停止までの時間", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+        Spacer(Modifier.height(8.dp))
+        Box {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = true },
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, Color(0xFFBBD7F6)),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFF7FBFF))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(selectedLabel, fontSize = 16.sp, modifier = Modifier.weight(1f), color = Color.Black)
+                    Text("▼", fontSize = 14.sp, color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
+                }
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                MicrophoneStopOptions.forEach { (minutes, label) ->
+                    DropdownMenuItem(
+                        text = { Text(label, fontSize = 16.sp) },
+                        onClick = {
+                            expanded = false
+                            onSelected(minutes)
+                        }
+                    )
+                }
+            }
+        }
+        Divider(color = Color(0xFFE0E0E0), modifier = Modifier.padding(top = 12.dp))
+    }
+}
+
+@Composable
+private fun MicrophoneCommandEditorRow(
+    action: String,
+    phrase: String,
+    onPhraseChanged: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            action,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.Black,
+            modifier = Modifier
+                .weight(0.42f)
+                .padding(end = 10.dp)
+        )
+        BasicTextField(
+            value = phrase,
+            onValueChange = onPhraseChanged,
+            singleLine = true,
+            textStyle = TextStyle(fontSize = 16.sp, color = Color.Black),
+            cursorBrush = SolidColor(Color(0xFF1976D2)),
+            modifier = Modifier
+                .weight(0.58f)
+                .background(Color(0xFFF7F9FC), RoundedCornerShape(6.dp))
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+            decorationBox = { innerTextField ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (phrase.isBlank()) {
+                        Text("指示語を入力", color = Color(0xFFAAAAAA), fontSize = 15.sp)
+                    }
+                    innerTextField()
+                }
+            }
+        )
+    }
+    Divider(color = Color(0xFFE8E8E8))
+}
+
+@Composable
+private fun SettingNavigationRow(
+    title: String,
+    description: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp)
+        ) {
+            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+            Spacer(Modifier.height(4.dp))
+            Text(description, color = Color(0xFF666666), fontSize = 13.sp, lineHeight = 18.sp)
+        }
+        Text("›", color = Color(0xFF1976D2), fontSize = 30.sp, fontWeight = FontWeight.Bold)
+    }
+    Divider(color = Color(0xFFE0E0E0))
 }
 
 @Composable
@@ -4698,11 +5073,11 @@ private fun BottomIconBar(
             .background(Color.White),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        BottomIcon(R.drawable.icon_carrot, "ホーム", screen == Screen.Home, onHome)
-        BottomIcon(R.drawable.icon_cabbage, "地図", screen == Screen.Map, onMap)
-        BottomIcon(R.drawable.icon_tomato, "設定", screen == Screen.Settings, onSettings)
-        BottomIcon(R.drawable.icon_favorite, "お気に入り", screen == Screen.Favorites, onFavorite)
         BottomIcon(R.drawable.icon_potato, "オーナー", false, onOwner)
+        BottomIcon(R.drawable.icon_favorite, "お気に入り", screen == Screen.Favorites, onFavorite)
+        BottomIcon(R.drawable.icon_carrot, "ホーム", screen == Screen.Home, onHome)
+        BottomIcon(R.drawable.icon_tomato, "設定", screen == Screen.Settings, onSettings)
+        BottomIcon(R.drawable.icon_cabbage, "地図", screen == Screen.Map, onMap)
     }
 }
 

@@ -11,6 +11,34 @@ private const val PREF_NAME = "shopping_memo"
 private const val PREF_MEMOS = "memos"
 private const val PREF_ONE_HAND_MODE = "one_hand_mode_enabled"
 private const val PREF_SIMPLE_MODE = "simple_mode_enabled"
+private const val PREF_MIC_START_ON_LAUNCH = "mic_start_on_launch"
+private const val PREF_MIC_STOP_TIMEOUT_MINUTES = "mic_stop_timeout_minutes"
+private const val PREF_MIC_OPERATION_ENABLED = "mic_operation_enabled"
+private const val PREF_MIC_COMMAND_PREFIX = "mic_command_"
+
+data class MicrophoneSettings(
+    val startOnLaunch: Boolean = false,
+    val stopTimeoutMinutes: Int = 0,
+    val operationEnabled: Boolean = true,
+    val commands: Map<String, String> = defaultMicrophoneCommands()
+)
+
+fun defaultMicrophoneCommands(): Map<String, String> {
+    return linkedMapOf(
+        "home" to "ホーム",
+        "showTrash" to "ゴミ箱",
+        "scrollUp" to "上スク",
+        "scrollDown" to "下スク",
+        "stop" to "ストップ",
+        "focusNumber" to "（数字）番",
+        "complete" to "（数字番）完了",
+        "delete" to "（数字番）削除",
+        "restore" to "（数字番）戻す",
+        "readAloud" to "（数字番）読み上げ",
+        "finishMic" to "マイク停止",
+        "exitApp" to "アプリ終了"
+    )
+}
 
 fun loadMemos(context: Context): List<ShoppingMemo> {
     val raw = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).getString(PREF_MEMOS, null)
@@ -92,6 +120,31 @@ fun saveSimpleModeEnabled(context: Context, enabled: Boolean) {
         .edit()
         .putBoolean(PREF_SIMPLE_MODE, enabled)
         .apply()
+}
+
+fun loadMicrophoneSettings(context: Context): MicrophoneSettings {
+    val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    val defaults = defaultMicrophoneCommands()
+    return MicrophoneSettings(
+        startOnLaunch = prefs.getBoolean(PREF_MIC_START_ON_LAUNCH, false),
+        stopTimeoutMinutes = prefs.getInt(PREF_MIC_STOP_TIMEOUT_MINUTES, 0),
+        operationEnabled = prefs.getBoolean(PREF_MIC_OPERATION_ENABLED, true),
+        commands = defaults.mapValues { (key, defaultValue) ->
+            val savedValue = prefs.getString(PREF_MIC_COMMAND_PREFIX + key, defaultValue) ?: defaultValue
+            if (key == "finishMic" && savedValue == "マイク終了") defaultValue else savedValue
+        }
+    )
+}
+
+fun saveMicrophoneSettings(context: Context, settings: MicrophoneSettings) {
+    val editor = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+        .putBoolean(PREF_MIC_START_ON_LAUNCH, settings.startOnLaunch)
+        .putInt(PREF_MIC_STOP_TIMEOUT_MINUTES, settings.stopTimeoutMinutes)
+        .putBoolean(PREF_MIC_OPERATION_ENABLED, settings.operationEnabled)
+    defaultMicrophoneCommands().keys.forEach { key ->
+        editor.putString(PREF_MIC_COMMAND_PREFIX + key, settings.commands[key].orEmpty())
+    }
+    editor.apply()
 }
 
 fun assignDefaultTitleIfBlank(memo: ShoppingMemo, memos: List<ShoppingMemo>) {
