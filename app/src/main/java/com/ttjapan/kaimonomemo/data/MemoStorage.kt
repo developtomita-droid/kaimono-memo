@@ -11,12 +11,15 @@ private const val PREF_NAME = "shopping_memo"
 private const val PREF_MEMOS = "memos"
 private const val PREF_ONE_HAND_MODE = "one_hand_mode_enabled"
 private const val PREF_SIMPLE_MODE = "simple_mode_enabled"
+private const val PREF_LEFT_HAND_MODE = "left_hand_mode_enabled"
 private const val PREF_MIC_START_ON_LAUNCH = "mic_start_on_launch"
 private const val PREF_MIC_STOP_TIMEOUT_MINUTES = "mic_stop_timeout_minutes"
+private const val PREF_MIC_DISABLED = "mic_disabled"
 private const val PREF_MIC_OPERATION_ENABLED = "mic_operation_enabled"
 private const val PREF_MIC_COMMAND_PREFIX = "mic_command_"
 
 data class MicrophoneSettings(
+    val disabled: Boolean = false,
     val startOnLaunch: Boolean = false,
     val stopTimeoutMinutes: Int = 0,
     val operationEnabled: Boolean = true,
@@ -31,6 +34,8 @@ fun defaultMicrophoneCommands(): Map<String, String> {
         "scrollDown" to "下スク",
         "stop" to "ストップ",
         "focusNumber" to "（数字）番",
+        "add" to "追加",
+        "temporary" to "一時的",
         "complete" to "（数字番）完了",
         "delete" to "（数字番）削除",
         "restore" to "（数字番）戻す",
@@ -122,10 +127,23 @@ fun saveSimpleModeEnabled(context: Context, enabled: Boolean) {
         .apply()
 }
 
+fun loadLeftHandModeEnabled(context: Context): Boolean {
+    return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_LEFT_HAND_MODE, false)
+}
+
+fun saveLeftHandModeEnabled(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_LEFT_HAND_MODE, enabled)
+        .apply()
+}
+
 fun loadMicrophoneSettings(context: Context): MicrophoneSettings {
     val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
     val defaults = defaultMicrophoneCommands()
     return MicrophoneSettings(
+        disabled = prefs.getBoolean(PREF_MIC_DISABLED, false),
         startOnLaunch = prefs.getBoolean(PREF_MIC_START_ON_LAUNCH, false),
         stopTimeoutMinutes = prefs.getInt(PREF_MIC_STOP_TIMEOUT_MINUTES, 0),
         operationEnabled = prefs.getBoolean(PREF_MIC_OPERATION_ENABLED, true),
@@ -138,6 +156,7 @@ fun loadMicrophoneSettings(context: Context): MicrophoneSettings {
 
 fun saveMicrophoneSettings(context: Context, settings: MicrophoneSettings) {
     val editor = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+        .putBoolean(PREF_MIC_DISABLED, settings.disabled)
         .putBoolean(PREF_MIC_START_ON_LAUNCH, settings.startOnLaunch)
         .putInt(PREF_MIC_STOP_TIMEOUT_MINUTES, settings.stopTimeoutMinutes)
         .putBoolean(PREF_MIC_OPERATION_ENABLED, settings.operationEnabled)

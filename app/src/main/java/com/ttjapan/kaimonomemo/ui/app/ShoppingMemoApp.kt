@@ -131,10 +131,12 @@ import androidx.core.content.ContextCompat
 import com.ttjapan.kaimonomemo.R
 import com.ttjapan.kaimonomemo.data.MicrophoneSettings
 import com.ttjapan.kaimonomemo.data.assignDefaultTitleIfBlank
+import com.ttjapan.kaimonomemo.data.loadLeftHandModeEnabled
 import com.ttjapan.kaimonomemo.data.loadMicrophoneSettings
 import com.ttjapan.kaimonomemo.data.loadMemos
 import com.ttjapan.kaimonomemo.data.loadOneHandModeEnabled
 import com.ttjapan.kaimonomemo.data.loadSimpleModeEnabled
+import com.ttjapan.kaimonomemo.data.saveLeftHandModeEnabled
 import com.ttjapan.kaimonomemo.data.saveMicrophoneSettings
 import com.ttjapan.kaimonomemo.data.saveMemos
 import com.ttjapan.kaimonomemo.data.saveOneHandModeEnabled
@@ -287,6 +289,7 @@ fun ShoppingMemoApp() {
     var imageEditingMemoId by remember { mutableStateOf<String?>(null) }
     var oneHandModeEnabled by remember { mutableStateOf(loadOneHandModeEnabled(context)) }
     var simpleModeEnabled by remember { mutableStateOf(initialSimpleModeEnabled) }
+    var leftHandModeEnabled by remember { mutableStateOf(loadLeftHandModeEnabled(context)) }
     var microphoneSettings by remember { mutableStateOf(loadMicrophoneSettings(context)) }
     var homeTopScrollRequest by remember { mutableStateOf(0) }
     val recentlyMovedEntryIds = remember { mutableStateListOf<String>() }
@@ -323,6 +326,10 @@ fun ShoppingMemoApp() {
         applyTemporaryTitleForMode(temporaryMemo, enabled)
         saveSimpleModeEnabled(context, enabled)
         persist()
+    }
+    fun updateLeftHandMode(enabled: Boolean) {
+        leftHandModeEnabled = enabled
+        saveLeftHandModeEnabled(context, enabled)
     }
     fun updateMicrophoneSettings(settings: MicrophoneSettings) {
         microphoneSettings = settings
@@ -406,6 +413,7 @@ fun ShoppingMemoApp() {
                         MemoDetailScreen(
                             memo = temporaryMemo,
                             oneHandModeEnabled = oneHandModeEnabled,
+                            microphoneEnabled = !microphoneSettings.disabled,
                             recentlyMovedEntryIds = emptySet(),
                             onFinish = ::finishTemporaryHome,
                             onChanged = ::persist
@@ -416,6 +424,7 @@ fun ShoppingMemoApp() {
                             trashedMemos = trashedMemos,
                             temporaryMemo = temporaryMemo,
                             oneHandModeEnabled = oneHandModeEnabled,
+                            microphoneEnabled = !microphoneSettings.disabled,
                             homeTopScrollRequest = homeTopScrollRequest,
                             onAddMemo = ::addMemo,
                             onOpenMemo = ::openMemo,
@@ -458,6 +467,7 @@ fun ShoppingMemoApp() {
                         MemoDetailScreen(
                             memo = selectedMemo,
                             oneHandModeEnabled = oneHandModeEnabled,
+                            microphoneEnabled = !microphoneSettings.disabled,
                             recentlyMovedEntryIds = recentlyMovedEntryIds.toSet(),
                             onFinish = ::finishDetail,
                             onChanged = ::persist
@@ -487,6 +497,8 @@ fun ShoppingMemoApp() {
                     onOneHandModeChanged = ::updateOneHandMode,
                     simpleModeEnabled = simpleModeEnabled,
                     onSimpleModeChanged = ::updateSimpleMode,
+                    leftHandModeEnabled = leftHandModeEnabled,
+                    onLeftHandModeChanged = ::updateLeftHandMode,
                     microphoneOperationEnabled = microphoneSettings.operationEnabled,
                     onOpenMicrophoneSettings = { currentScreen = Screen.MicrophoneSettings }
                 )
@@ -516,6 +528,7 @@ private fun AdvancedHomeScreen(
     trashedMemos: List<ShoppingMemo>,
     temporaryMemo: ShoppingMemo,
     oneHandModeEnabled: Boolean,
+    microphoneEnabled: Boolean,
     homeTopScrollRequest: Int,
     onAddMemo: () -> Unit,
     onOpenMemo: (ShoppingMemo) -> Unit,
@@ -900,6 +913,15 @@ private fun AdvancedHomeScreen(
                     )
                 }
             }
+        }
+
+        if (microphoneEnabled) {
+            HomeMicrophoneButton(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 12.dp)
+                    .zIndex(40f)
+            )
         }
 
         val draggedMemo = memos.firstOrNull { it.id == draggingId }
@@ -1713,10 +1735,12 @@ private fun TemporaryMemoPanel(
                     .background(Color(0xFFFFEBEE)),
                 contentAlignment = Alignment.Center
             ) {
-                Image(
-                    painter = painterResource(R.drawable.ic_temp_cart),
-                    contentDescription = null,
-                    modifier = Modifier.size(84.dp)
+                Text(
+                    text = "一時的",
+                    color = Color(0xFFD32F2F),
+                    fontSize = 26.sp,
+                    lineHeight = 28.sp,
+                    fontWeight = FontWeight.Bold
                 )
             }
             Column(
@@ -1729,15 +1753,6 @@ private fun TemporaryMemoPanel(
                     color = Color(0xFF2E7D32),
                     fontSize = 13.sp,
                     lineHeight = 15.sp
-                )
-                Text(
-                    text = memo.title.ifBlank { TemporaryMemoTitle },
-                    color = Color(0xFFD32F2F),
-                    fontSize = 16.sp,
-                    lineHeight = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
                 )
             }
             Divider(color = Color(0xFFE0E0E0))
@@ -1863,20 +1878,40 @@ private fun HomeAddScrollButton(
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
+            contentAlignment = Alignment.CenterEnd
         ) {
             Row(
                 horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(end = 22.dp)
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("+", color = Color(0xFF1976D2), fontSize = 40.sp, fontWeight = FontWeight.Bold, lineHeight = 36.sp)
                     Text("追加", color = Color(0xFF1976D2), fontSize = 18.sp, fontWeight = FontWeight.Bold, lineHeight = 20.sp)
                 }
-                Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.width(10.dp))
                 Text("↕", color = Color(0xFFAD1457), fontSize = 46.sp, fontWeight = FontWeight.Bold, lineHeight = 44.sp)
             }
         }
+    }
+}
+
+@Composable
+private fun HomeMicrophoneButton(
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit = {}
+) {
+    FloatingActionButton(
+        onClick = onClick,
+        containerColor = Color(0xFF1E88E5),
+        modifier = modifier.size(86.dp)
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.ic_fab_mic),
+            contentDescription = "マイク",
+            tint = Color.White,
+            modifier = Modifier.size(50.dp)
+        )
     }
 }
 
@@ -2830,6 +2865,7 @@ private fun OneHandModeBackdrop(modifier: Modifier = Modifier) {
 private fun MemoDetailScreen(
     memo: ShoppingMemo,
     oneHandModeEnabled: Boolean,
+    microphoneEnabled: Boolean,
     recentlyMovedEntryIds: Set<String>,
     onFinish: () -> Unit,
     onChanged: () -> Unit
@@ -2922,8 +2958,8 @@ private fun MemoDetailScreen(
         if (memo.title.isBlank()) titleFocusRequester.requestFocus()
     }
 
-    LaunchedEffect(pagerState.currentPage) {
-        if (pagerState.currentPage == 1) {
+    LaunchedEffect(microphoneEnabled) {
+        if (!microphoneEnabled) {
             speechController.stop()
         }
     }
@@ -3197,12 +3233,12 @@ private fun MemoDetailScreen(
             }
         }
 
-        if (pagerState.currentPage == 0) {
+        if (microphoneEnabled) {
             MicFab(
                 controller = speechController,
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 22.dp, bottom = fabBottomPadding),
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = fabBottomPadding),
                 onClick = {
                             if (speechController.partialText.isNotBlank()) {
                                 speechController.commitPartial()
@@ -4493,7 +4529,7 @@ private fun MicFab(
         ),
         label = "recording-stop-scale"
     )
-    Column(modifier = modifier, horizontalAlignment = Alignment.End) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         if (hasPartial) {
             Text(
                 text = controller.partialText,
@@ -4508,8 +4544,8 @@ private fun MicFab(
         }
         FloatingActionButton(
             onClick = onClick,
-            containerColor = if (hasPartial) Color(0xFF16A34A) else if (controller.isRunning) Color(0xFFE11D48) else Color(0xFF1E88E5),
-            modifier = Modifier.size(90.dp)
+            containerColor = if (controller.isRunning) Color(0xFFE11D48) else Color(0xFF1E88E5),
+            modifier = Modifier.size(86.dp)
         ) {
             if (controller.isRunning && !hasPartial) {
                 Box(
@@ -4524,11 +4560,11 @@ private fun MicFab(
             } else {
                 Icon(
                     painter = painterResource(
-                        id = if (hasPartial) R.drawable.ic_fab_check else R.drawable.ic_fab_mic
+                        id = if (hasPartial) R.drawable.ic_fab_ear else R.drawable.ic_fab_mic
                     ),
                     contentDescription = null,
                     tint = Color.White,
-                    modifier = Modifier.size(if (hasPartial) 44.dp else 50.dp)
+                    modifier = Modifier.size(if (hasPartial) 38.dp else 50.dp)
                 )
             }
         }
@@ -4567,6 +4603,8 @@ private fun SettingsScreen(
     onOneHandModeChanged: (Boolean) -> Unit,
     simpleModeEnabled: Boolean,
     onSimpleModeChanged: (Boolean) -> Unit,
+    leftHandModeEnabled: Boolean,
+    onLeftHandModeChanged: (Boolean) -> Unit,
     microphoneOperationEnabled: Boolean,
     onOpenMicrophoneSettings: () -> Unit
 ) {
@@ -4611,6 +4649,14 @@ private fun SettingsScreen(
                     )
                 }
                 item {
+                    SettingToggleRow(
+                        title = "左手で操作",
+                        description = "左手で操作しやすいボタン配置に変更します。",
+                        checked = leftHandModeEnabled,
+                        onCheckedChange = onLeftHandModeChanged
+                    )
+                }
+                item {
                     SettingNavigationRow(
                         title = "マイク設定",
                         description = "マイクでアプリを操作するための指示語の登録などができます。",
@@ -4642,6 +4688,8 @@ private val MicrophoneCommandRows = listOf(
     MicrophoneCommandRow("scrollDown", "スクロール下"),
     MicrophoneCommandRow("stop", "ストップ"),
     MicrophoneCommandRow("focusNumber", "番号フォーカス"),
+    MicrophoneCommandRow("add", "追加"),
+    MicrophoneCommandRow("temporary", "一時的"),
     MicrophoneCommandRow("complete", "完了"),
     MicrophoneCommandRow("delete", "削除"),
     MicrophoneCommandRow("restore", "戻す"),
@@ -4661,6 +4709,7 @@ private fun MicrophoneSettingsScreen(
         onSettingsChanged(settings.copy(commands = settings.commands + (key to value)))
     }
 
+    val microphoneControlsEnabled = !settings.disabled
     val listState = rememberLazyListState()
     OneHandSettingsFrame(
         oneHandModeEnabled = oneHandModeEnabled,
@@ -4683,15 +4732,32 @@ private fun MicrophoneSettingsScreen(
             ) {
                 item {
                     SettingToggleRow(
+                        title = "マイクを利用しない",
+                        description = "チェックすると、このアプリ内のマイク機能を非表示にします。",
+                        checked = settings.disabled,
+                        onCheckedChange = {
+                            onSettingsChanged(
+                                settings.copy(
+                                    disabled = it,
+                                    startOnLaunch = if (it) false else settings.startOnLaunch
+                                )
+                            )
+                        }
+                    )
+                }
+                item {
+                    SettingToggleRow(
                         title = "起動直後にマイクを有効にする",
                         description = "アプリ起動後、自動で音声入力を開始します。",
                         checked = settings.startOnLaunch,
+                        enabled = microphoneControlsEnabled,
                         onCheckedChange = { onSettingsChanged(settings.copy(startOnLaunch = it)) }
                     )
                 }
                 item {
                     MicrophoneStopTimeoutDropdown(
                         selectedMinutes = settings.stopTimeoutMinutes,
+                        enabled = microphoneControlsEnabled,
                         onSelected = { onSettingsChanged(settings.copy(stopTimeoutMinutes = it)) }
                     )
                 }
@@ -4700,6 +4766,7 @@ private fun MicrophoneSettingsScreen(
                         title = "マイク操作",
                         description = "指示語を認識してアプリ操作に使います。",
                         checked = settings.operationEnabled,
+                        enabled = microphoneControlsEnabled,
                         onCheckedChange = { onSettingsChanged(settings.copy(operationEnabled = it)) }
                     )
                 }
@@ -4714,14 +4781,14 @@ private fun MicrophoneSettingsScreen(
                             "動作",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF666666),
+                            color = if (microphoneControlsEnabled) Color(0xFF666666) else Color(0xFFBBBBBB),
                             modifier = Modifier.weight(0.42f)
                         )
                         Text(
                             "指示語",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF666666),
+                            color = if (microphoneControlsEnabled) Color(0xFF666666) else Color(0xFFBBBBBB),
                             modifier = Modifier.weight(0.58f)
                         )
                     }
@@ -4730,6 +4797,7 @@ private fun MicrophoneSettingsScreen(
                     MicrophoneCommandEditorRow(
                         action = row.action,
                         phrase = settings.commands[row.key].orEmpty(),
+                        enabled = microphoneControlsEnabled,
                         onPhraseChanged = { updateCommands(row.key, it) }
                     )
                 }
@@ -4836,6 +4904,7 @@ private fun OneHandSettingsFrame(
 @Composable
 private fun MicrophoneStopTimeoutDropdown(
     selectedMinutes: Int,
+    enabled: Boolean = true,
     onSelected: (Int) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -4848,10 +4917,10 @@ private fun MicrophoneStopTimeoutDropdown(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { expanded = true },
+                    .clickable(enabled = enabled) { expanded = true },
                 shape = RoundedCornerShape(8.dp),
                 border = BorderStroke(1.dp, Color(0xFFBBD7F6)),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFF7FBFF))
+                colors = CardDefaults.cardColors(containerColor = if (enabled) Color(0xFFF7FBFF) else Color(0xFFF2F2F2))
             ) {
                 Row(
                     modifier = Modifier
@@ -4863,7 +4932,7 @@ private fun MicrophoneStopTimeoutDropdown(
                     Text("▼", fontSize = 14.sp, color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
                 }
             }
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
                 MicrophoneStopOptions.forEach { (minutes, label) ->
                     DropdownMenuItem(
                         text = { Text(label, fontSize = 16.sp) },
@@ -4883,6 +4952,7 @@ private fun MicrophoneStopTimeoutDropdown(
 private fun MicrophoneCommandEditorRow(
     action: String,
     phrase: String,
+    enabled: Boolean = true,
     onPhraseChanged: (String) -> Unit
 ) {
     Row(
@@ -4893,20 +4963,21 @@ private fun MicrophoneCommandEditorRow(
             action,
             fontSize = 16.sp,
             fontWeight = FontWeight.Bold,
-            color = Color.Black,
+            color = if (enabled) Color.Black else Color(0xFFAAAAAA),
             modifier = Modifier
                 .weight(0.42f)
                 .padding(end = 10.dp)
         )
         BasicTextField(
             value = phrase,
-            onValueChange = onPhraseChanged,
+            onValueChange = { if (enabled) onPhraseChanged(it) },
+            enabled = enabled,
             singleLine = true,
-            textStyle = TextStyle(fontSize = 16.sp, color = Color.Black),
+            textStyle = TextStyle(fontSize = 16.sp, color = if (enabled) Color.Black else Color(0xFFAAAAAA)),
             cursorBrush = SolidColor(Color(0xFF1976D2)),
             modifier = Modifier
                 .weight(0.58f)
-                .background(Color(0xFFF7F9FC), RoundedCornerShape(6.dp))
+                .background(if (enabled) Color(0xFFF7F9FC) else Color(0xFFF2F2F2), RoundedCornerShape(6.dp))
                 .padding(horizontal = 10.dp, vertical = 9.dp),
             decorationBox = { innerTextField ->
                 Box(contentAlignment = Alignment.CenterStart) {
@@ -4979,12 +5050,13 @@ private fun SettingToggleRow(
     title: String,
     description: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) },
+            .clickable(enabled = enabled) { onCheckedChange(!checked) },
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(
@@ -4992,11 +5064,11 @@ private fun SettingToggleRow(
                 .weight(1f)
                 .padding(end = 12.dp)
         ) {
-            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = if (enabled) Color.Black else Color(0xFFAAAAAA))
             Spacer(Modifier.height(4.dp))
-            Text(description, color = Color(0xFF666666), fontSize = 13.sp, lineHeight = 18.sp)
+            Text(description, color = if (enabled) Color(0xFF666666) else Color(0xFFBBBBBB), fontSize = 13.sp, lineHeight = 18.sp)
         }
-        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
     }
     Divider(color = Color(0xFFE0E0E0))
 }
