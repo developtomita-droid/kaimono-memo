@@ -843,11 +843,16 @@ private fun HomeItemsPage(
     onTemporaryDragEnd: () -> Unit,
     onTemporaryDragCancel: () -> Unit
 ) {
-    Row(
+    val scope = rememberCoroutineScope()
+    val scrollDistancePx = with(LocalDensity.current) { 360.dp.toPx() }
+    val controlHeight = 90.dp
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .padding(10.dp)
     ) {
+        Row(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -901,22 +906,7 @@ private fun HomeItemsPage(
                     )
                 }
             }
-            HomeFixedActionButton(
-                icon = "+",
-                label = "追加",
-                height = 78.dp,
-                containerColor = Color(0xFFEAF4FF),
-                contentColor = Color(0xFF1976D2),
-                onClick = onAddMemo,
-                modifier = Modifier.fillMaxWidth()
-            )
         }
-        Box(
-            modifier = Modifier
-                .width(1.dp)
-                .fillMaxHeight()
-                .background(Color(0xFFBDBDBD))
-        )
         if (showCardDropTargets) {
             HomeCardDropTargets(
                 modifier = Modifier
@@ -943,6 +933,23 @@ private fun HomeItemsPage(
                 onDragCancel = onTemporaryDragCancel
             )
         }
+        }
+        HomeLeftControlBoundary(
+            modifier = Modifier
+                .matchParentSize()
+                .zIndex(20f),
+            controlHeight = controlHeight
+        )
+        HomeLeftBottomControls(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .fillMaxWidth(0.5f)
+                .height(controlHeight)
+                .zIndex(25f),
+            onAddMemo = onAddMemo,
+            onScrollUp = { scope.launch { gridState.scrollBy(-scrollDistancePx) } },
+            onScrollDown = { scope.launch { gridState.scrollBy(scrollDistancePx) } }
+        )
     }
 }
 
@@ -1460,6 +1467,96 @@ private fun TemporaryMemoPanel(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun HomeLeftControlBoundary(
+    modifier: Modifier = Modifier,
+    controlHeight: Dp
+) {
+    Canvas(modifier) {
+        val stroke = 1.5.dp.toPx()
+        val centerX = size.width / 2f
+        val controlTop = (size.height - controlHeight.toPx()).coerceAtLeast(0f)
+        val color = Color(0xFF9E9E9E)
+        drawLine(
+            color = color,
+            start = Offset(centerX, 0f),
+            end = Offset(centerX, controlTop),
+            strokeWidth = stroke
+        )
+        drawLine(
+            color = color,
+            start = Offset(centerX, controlTop),
+            end = Offset(size.width, controlTop),
+            strokeWidth = stroke
+        )
+    }
+}
+
+@Composable
+private fun HomeLeftBottomControls(
+    modifier: Modifier = Modifier,
+    onAddMemo: () -> Unit,
+    onScrollUp: () -> Unit,
+    onScrollDown: () -> Unit
+) {
+    Row(
+        modifier = modifier
+            .background(Color.White.copy(alpha = 0.98f))
+            .padding(start = 6.dp, top = 6.dp, bottom = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        HomeFixedActionButton(
+            icon = "+",
+            label = "追加",
+            height = 78.dp,
+            containerColor = Color(0xFFEAF4FF),
+            contentColor = Color(0xFF1976D2),
+            onClick = onAddMemo,
+            modifier = Modifier.weight(1f)
+        )
+        Column(
+            modifier = Modifier
+                .width(82.dp)
+                .fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            HomeScrollButton(
+                text = "↑",
+                modifier = Modifier.weight(1f),
+                onClick = onScrollUp
+            )
+            HomeScrollButton(
+                text = "↓",
+                modifier = Modifier.weight(1f),
+                onClick = onScrollDown
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeScrollButton(
+    text: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(6.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color(0xFFFFC1D8),
+            contentColor = Color.Black
+        ),
+        border = BorderStroke(1.dp, Color(0xFFD81B60)),
+        elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+        contentPadding = PaddingValues(0.dp)
+    ) {
+        Text(text, fontSize = 26.sp, fontWeight = FontWeight.Bold, lineHeight = 26.sp)
     }
 }
 
