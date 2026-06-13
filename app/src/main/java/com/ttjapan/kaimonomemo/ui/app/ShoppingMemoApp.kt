@@ -281,6 +281,7 @@ fun ShoppingMemoApp() {
     var imageEditingMemoId by remember { mutableStateOf<String?>(null) }
     var oneHandModeEnabled by remember { mutableStateOf(loadOneHandModeEnabled(context)) }
     var simpleModeEnabled by remember { mutableStateOf(initialSimpleModeEnabled) }
+    var homeTopScrollRequest by remember { mutableStateOf(0) }
     val recentlyMovedEntryIds = remember { mutableStateListOf<String>() }
     val selectedMemo = memos.firstOrNull { it.id == selectedMemoId }
     val imageEditingMemo = memos.firstOrNull { it.id == imageEditingMemoId }
@@ -338,7 +339,10 @@ fun ShoppingMemoApp() {
     }
     fun addMemo() {
         val memo = ShoppingMemo(entries = listOf(ShoppingEntry(name = "")))
-        memos.add(memo)
+        val insertIndex = (memos.indexOfFirst { isTemporaryMemo(it) } + 1)
+            .coerceIn(0, memos.size)
+        memos.add(insertIndex, memo)
+        homeTopScrollRequest++
         openMemo(memo)
     }
     fun finishTemporaryHome() {
@@ -395,6 +399,7 @@ fun ShoppingMemoApp() {
                             trashedMemos = trashedMemos,
                             temporaryMemo = temporaryMemo,
                             oneHandModeEnabled = oneHandModeEnabled,
+                            homeTopScrollRequest = homeTopScrollRequest,
                             onAddMemo = ::addMemo,
                             onOpenMemo = ::openMemo,
                             onOpenTemporaryMemo = { openMemo(temporaryMemo) },
@@ -486,6 +491,7 @@ private fun AdvancedHomeScreen(
     trashedMemos: List<ShoppingMemo>,
     temporaryMemo: ShoppingMemo,
     oneHandModeEnabled: Boolean,
+    homeTopScrollRequest: Int,
     onAddMemo: () -> Unit,
     onOpenMemo: (ShoppingMemo) -> Unit,
     onOpenTemporaryMemo: () -> Unit,
@@ -516,6 +522,7 @@ private fun AdvancedHomeScreen(
     var cardTrashBounds by remember { mutableStateOf<Rect?>(null) }
     var pendingImageMemo by remember { mutableStateOf<ShoppingMemo?>(null) }
     var homeBounds by remember { mutableStateOf<Rect?>(null) }
+    var homeControlBounds by remember { mutableStateOf<Rect?>(null) }
     var temporaryListBounds by remember { mutableStateOf<Rect?>(null) }
     var draggingTemporaryEntry by remember { mutableStateOf<ShoppingEntry?>(null) }
     var temporaryDragPoint by remember { mutableStateOf(Offset.Zero) }
@@ -524,6 +531,7 @@ private fun AdvancedHomeScreen(
     var oneHandFlingGeneration by remember { mutableStateOf(0) }
     val oneHandMaxOffsetPx = (homeHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
     val oneHandBackdropHeight = with(density) { oneHandOffsetPx.toDp() }
+    val oneHandOffsetDp = with(density) { oneHandOffsetPx.toDp() }
     val dragActive = draggingId != null || draggingTemporaryEntry != null
     val currentListAtTop = if (pagerState.currentPage == 0) {
         !activeGridState.canScrollBackward
@@ -532,6 +540,7 @@ private fun AdvancedHomeScreen(
     }
     val latestCurrentListAtTop by rememberUpdatedState(currentListAtTop)
     val latestHomeBounds by rememberUpdatedState(homeBounds)
+    val latestHomeControlBounds by rememberUpdatedState(homeControlBounds)
     val latestTemporaryListBounds by rememberUpdatedState(temporaryListBounds)
     val sourceMemoIds = memos.map { it.id }
     val orderedHomeMemos = run {
@@ -549,6 +558,13 @@ private fun AdvancedHomeScreen(
             sourceMemoIds.forEach { id ->
                 if (id !in homeMemoOrderIds) homeMemoOrderIds.add(id)
             }
+        }
+    }
+
+    LaunchedEffect(homeTopScrollRequest) {
+        if (homeTopScrollRequest > 0) {
+            activeGridState.scrollToItem(0, 0)
+            oneHandOffsetPx = 0f
         }
     }
 
@@ -648,6 +664,34 @@ private fun AdvancedHomeScreen(
         }
     }
 
+    fun applyOneHandControlScroll(delta: Float): Float {
+        if (!oneHandModeEnabled || oneHandMaxOffsetPx <= 0f) return 0f
+        val before = oneHandOffsetPx
+        val boostedDelta = delta * OneHandScrollSpeedMultiplier
+        val nextOffset = (oneHandOffsetPx + boostedDelta).coerceIn(0f, oneHandMaxOffsetPx)
+        if (nextOffset == before) return 0f
+        oneHandFlingGeneration++
+        oneHandOffsetPx = nextOffset
+        return delta
+    }
+
+    fun scrollHomeControls(delta: Float): Float {
+        if (delta < 0f && oneHandOffsetPx > 0f) {
+            return applyOneHandControlScroll(delta)
+        }
+
+        val gridAtTopBefore = activeGridState.firstVisibleItemIndex == 0 &&
+            activeGridState.firstVisibleItemScrollOffset == 0
+        val gridConsumed = -activeGridState.dispatchRawDelta(-delta)
+        val remaining = delta - gridConsumed
+        val gridAtTopAfter = activeGridState.firstVisibleItemIndex == 0 &&
+            activeGridState.firstVisibleItemScrollOffset == 0
+        if (remaining > 0f && gridAtTopBefore && gridAtTopAfter) {
+            return gridConsumed + applyOneHandControlScroll(remaining)
+        }
+        return gridConsumed
+    }
+
     LaunchedEffect(oneHandModeEnabled) {
         if (!oneHandModeEnabled) oneHandOffsetPx = 0f
     }
@@ -706,17 +750,20 @@ private fun AdvancedHomeScreen(
                     if (!oneHandModeEnabled || dragActive) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                        oneHandFlingGeneration++
                         val home = latestHomeBounds
-                        val temporaryBounds = latestTemporaryListBounds
-                        if (home != null && temporaryBounds != null) {
+                        val controlBounds = latestHomeControlBounds
+                        if (home != null && controlBounds != null) {
                             val windowDown = Offset(home.left + down.position.x, home.top + down.position.y)
                             val translatedWindowDown = windowDown.copy(y = windowDown.y + oneHandOffsetPx)
-                            if (temporaryBounds.contains(windowDown) || temporaryBounds.contains(translatedWindowDown)) {
+                            if (controlBounds.contains(windowDown) || controlBounds.contains(translatedWindowDown)) {
                                 return@awaitEachGesture
                             }
                         }
-                        val listAtTopWhenGestureStarted = latestCurrentListAtTop
+                        oneHandFlingGeneration++
+                        val rightSideGesture = pagerState.currentPage == 0 &&
+                            home != null &&
+                            down.position.x >= (home.right - home.left) / 2f
+                        val listAtTopWhenGestureStarted = latestCurrentListAtTop || rightSideGesture
                         var totalX = 0f
                         var totalY = 0f
                         var lastVelocityY = 0f
@@ -791,6 +838,7 @@ private fun AdvancedHomeScreen(
                         onOpenMemo = onOpenMemo,
                         onToggleFavorite = onToggleFavorite,
                         onAddMemo = onAddMemo,
+                        oneHandOffset = oneHandOffsetDp,
                         showCardDropTargets = draggingId != null,
                         imageTargetActive = imageChangeBounds?.contains(dragPoint) == true,
                         trashTargetActive = cardTrashBounds?.contains(dragPoint) == true,
@@ -799,6 +847,8 @@ private fun AdvancedHomeScreen(
                         draggingTemporaryEntryId = draggingTemporaryEntry?.id,
                         onOpenTemporaryMemo = onOpenTemporaryMemo,
                         onTemporaryListPositioned = { temporaryListBounds = it },
+                        onControlPositioned = { homeControlBounds = it },
+                        onControlScroll = { delta -> scrollHomeControls(delta) },
                         onTemporaryDragStart = { entry, start, bounds ->
                             draggingTemporaryEntry = entry
                             temporaryDragPoint = if (bounds == null) start else Offset(bounds.left + start.x, bounds.top + start.y)
@@ -949,6 +999,7 @@ private fun HomeItemsPage(
     onOpenMemo: (ShoppingMemo) -> Unit,
     onToggleFavorite: (ShoppingMemo) -> Unit,
     onAddMemo: () -> Unit,
+    oneHandOffset: Dp,
     showCardDropTargets: Boolean,
     imageTargetActive: Boolean,
     trashTargetActive: Boolean,
@@ -960,7 +1011,9 @@ private fun HomeItemsPage(
     onTemporaryDrag: (Offset) -> Unit,
     onTemporaryDragEnd: () -> Unit,
     onTemporaryDragCancel: () -> Unit,
-    onTemporaryListPositioned: (Rect) -> Unit
+    onTemporaryListPositioned: (Rect) -> Unit,
+    onControlPositioned: (Rect) -> Unit,
+    onControlScroll: (Float) -> Float
 ) {
     val controlHeight = 190.dp
     val density = LocalDensity.current
@@ -1117,6 +1170,7 @@ private fun HomeItemsPage(
                     .fillMaxHeight(),
                 imageTargetActive = imageTargetActive,
                 trashTargetActive = trashTargetActive,
+                bottomInset = if (oneHandOffset > 0.dp) oneHandOffset else controlHeight,
                 onImageTargetPositioned = onImageTargetPositioned,
                 onTrashTargetPositioned = onTrashTargetPositioned
             )
@@ -1150,7 +1204,8 @@ private fun HomeItemsPage(
                 .height(controlHeight)
                 .zIndex(25f),
             onAddMemo = onAddMemo,
-            gridState = gridState
+            onPositioned = onControlPositioned,
+            onScroll = onControlScroll
         )
     }
 }
@@ -1160,11 +1215,12 @@ private fun HomeCardDropTargets(
     modifier: Modifier = Modifier,
     imageTargetActive: Boolean,
     trashTargetActive: Boolean,
+    bottomInset: Dp,
     onImageTargetPositioned: (Rect) -> Unit,
     onTrashTargetPositioned: (Rect) -> Unit
 ) {
     Column(
-        modifier = modifier,
+        modifier = modifier.padding(bottom = bottomInset),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         HomeDropTargetCard(
@@ -1597,11 +1653,28 @@ private fun TemporaryMemoPanel(
     val doneEntries = memo.entries.filter { it.checked && it.name.isNotBlank() }
     val totalCount = activeEntries.size + doneEntries.size
     val listState = rememberLazyListState()
-    val listScrollState = rememberScrollableState { delta ->
-        -listState.dispatchRawDelta(-delta)
-    }
     Card(
-        modifier = modifier.clickable(onClick = onOpen),
+        modifier = modifier.pointerInput(onOpen) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                var moved = false
+                var upTime = down.uptimeMillis
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Final)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    upTime = change.uptimeMillis
+                    val distance = change.position - down.position
+                    if (kotlin.math.abs(distance.x) > viewConfiguration.touchSlop ||
+                        kotlin.math.abs(distance.y) > viewConfiguration.touchSlop
+                    ) {
+                        moved = true
+                    }
+                    if (!change.pressed) break
+                }
+                val heldLongEnough = upTime - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis
+                if (!moved && !heldLongEnough) onOpen()
+            }
+        },
         shape = RoundedCornerShape(8.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
         border = BorderStroke(1.dp, Color(0xFFC8C8C8)),
@@ -1648,11 +1721,7 @@ private fun TemporaryMemoPanel(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .onGloballyPositioned { onListPositioned(it.boundsInWindow()) }
-                    .scrollable(
-                        state = listScrollState,
-                        orientation = Orientation.Vertical
-                    ),
+                    .onGloballyPositioned { onListPositioned(it.boundsInWindow()) },
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
                 userScrollEnabled = false
@@ -1724,15 +1793,17 @@ private fun HomeLeftControlBoundary(
 private fun HomeLeftBottomControls(
     modifier: Modifier = Modifier,
     onAddMemo: () -> Unit,
-    gridState: LazyGridState
+    onPositioned: (Rect) -> Unit,
+    onScroll: (Float) -> Float
 ) {
     Box(
         modifier = modifier
+            .onGloballyPositioned { onPositioned(it.boundsInWindow()) }
             .background(Color.White.copy(alpha = 0.98f))
             .padding(start = 6.dp, top = 6.dp, bottom = 6.dp, end = 6.dp)
     ) {
         HomeAddScrollButton(
-            gridState = gridState,
+            onScroll = onScroll,
             onClick = onAddMemo,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -1744,12 +1815,12 @@ private fun HomeLeftBottomControls(
 
 @Composable
 private fun HomeAddScrollButton(
-    gridState: LazyGridState,
     modifier: Modifier = Modifier,
+    onScroll: (Float) -> Float,
     onClick: () -> Unit
 ) {
     val scrollState = rememberScrollableState { delta ->
-        -gridState.dispatchRawDelta(-delta)
+        onScroll(delta)
     }
     Card(
         modifier = modifier
