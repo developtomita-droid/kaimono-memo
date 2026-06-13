@@ -25,6 +25,7 @@ import androidx.compose.foundation.gestures.rememberScrollableState
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -515,6 +516,7 @@ private fun AdvancedHomeScreen(
     var cardTrashBounds by remember { mutableStateOf<Rect?>(null) }
     var pendingImageMemo by remember { mutableStateOf<ShoppingMemo?>(null) }
     var homeBounds by remember { mutableStateOf<Rect?>(null) }
+    var temporaryListBounds by remember { mutableStateOf<Rect?>(null) }
     var draggingTemporaryEntry by remember { mutableStateOf<ShoppingEntry?>(null) }
     var temporaryDragPoint by remember { mutableStateOf(Offset.Zero) }
     var homeHeightPx by remember { mutableStateOf(0) }
@@ -529,6 +531,8 @@ private fun AdvancedHomeScreen(
         !trashGridState.canScrollBackward
     }
     val latestCurrentListAtTop by rememberUpdatedState(currentListAtTop)
+    val latestHomeBounds by rememberUpdatedState(homeBounds)
+    val latestTemporaryListBounds by rememberUpdatedState(temporaryListBounds)
     val sourceMemoIds = memos.map { it.id }
     val orderedHomeMemos = run {
         val byId = memos.associateBy { it.id }
@@ -611,6 +615,7 @@ private fun AdvancedHomeScreen(
 
     fun finishHomeMemoDrag() {
         val memo = memos.firstOrNull { it.id == draggingId }
+        val revealTopAfterDrop = memo != null && homeMemoOrderChanged && homeMemoOrderIds.firstOrNull() == memo.id
         when {
             memo != null && imageChangeBounds?.contains(dragPoint) == true -> pendingImageMemo = memo
             memo != null && cardTrashBounds?.contains(dragPoint) == true -> onDeleteMemo(memo)
@@ -620,6 +625,9 @@ private fun AdvancedHomeScreen(
         dragOffset = Offset.Zero
         draggedCardBounds = null
         homeMemoOrderChanged = false
+        if (revealTopAfterDrop) {
+            scope.launch { activeGridState.scrollToItem(0, 0) }
+        }
     }
 
     fun startOneHandFling(initialVelocityY: Float) {
@@ -699,6 +707,15 @@ private fun AdvancedHomeScreen(
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                         oneHandFlingGeneration++
+                        val home = latestHomeBounds
+                        val temporaryBounds = latestTemporaryListBounds
+                        if (home != null && temporaryBounds != null) {
+                            val windowDown = Offset(home.left + down.position.x, home.top + down.position.y)
+                            val translatedWindowDown = windowDown.copy(y = windowDown.y + oneHandOffsetPx)
+                            if (temporaryBounds.contains(windowDown) || temporaryBounds.contains(translatedWindowDown)) {
+                                return@awaitEachGesture
+                            }
+                        }
                         val listAtTopWhenGestureStarted = latestCurrentListAtTop
                         var totalX = 0f
                         var totalY = 0f
@@ -781,6 +798,7 @@ private fun AdvancedHomeScreen(
                         onTrashTargetPositioned = { cardTrashBounds = it },
                         draggingTemporaryEntryId = draggingTemporaryEntry?.id,
                         onOpenTemporaryMemo = onOpenTemporaryMemo,
+                        onTemporaryListPositioned = { temporaryListBounds = it },
                         onTemporaryDragStart = { entry, start, bounds ->
                             draggingTemporaryEntry = entry
                             temporaryDragPoint = if (bounds == null) start else Offset(bounds.left + start.x, bounds.top + start.y)
@@ -941,9 +959,10 @@ private fun HomeItemsPage(
     onTemporaryDragStart: (ShoppingEntry, Offset, Rect?) -> Unit,
     onTemporaryDrag: (Offset) -> Unit,
     onTemporaryDragEnd: () -> Unit,
-    onTemporaryDragCancel: () -> Unit
+    onTemporaryDragCancel: () -> Unit,
+    onTemporaryListPositioned: (Rect) -> Unit
 ) {
-    val controlHeight = 90.dp
+    val controlHeight = 190.dp
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     var pageBounds by remember { mutableStateOf<Rect?>(null) }
@@ -1110,6 +1129,7 @@ private fun HomeItemsPage(
                     .weight(1f)
                     .fillMaxHeight(),
                 onOpen = onOpenTemporaryMemo,
+                onListPositioned = onTemporaryListPositioned,
                 onDragStart = onTemporaryDragStart,
                 onDrag = onTemporaryDrag,
                 onDragEnd = onTemporaryDragEnd,
@@ -1507,6 +1527,7 @@ private fun HomeScreen(
                     .weight(1f)
                     .fillMaxHeight(),
                 onOpen = onOpenTemporaryMemo,
+                onListPositioned = {},
                 onDragStart = { entry, start, bounds ->
                     draggingTemporaryEntry = entry
                     temporaryDragPoint = if (bounds == null) start else Offset(bounds.left + start.x, bounds.top + start.y)
@@ -1566,6 +1587,7 @@ private fun TemporaryMemoPanel(
     draggingEntryId: String?,
     modifier: Modifier = Modifier,
     onOpen: () -> Unit,
+    onListPositioned: (Rect) -> Unit,
     onDragStart: (ShoppingEntry, Offset, Rect?) -> Unit,
     onDrag: (Offset) -> Unit,
     onDragEnd: () -> Unit,
@@ -1573,6 +1595,11 @@ private fun TemporaryMemoPanel(
 ) {
     val activeEntries = memo.entries.filter { !it.checked && it.name.isNotBlank() }
     val doneEntries = memo.entries.filter { it.checked && it.name.isNotBlank() }
+    val totalCount = activeEntries.size + doneEntries.size
+    val listState = rememberLazyListState()
+    val listScrollState = rememberScrollableState { delta ->
+        -listState.dispatchRawDelta(-delta)
+    }
     Card(
         modifier = modifier.clickable(onClick = onOpen),
         shape = RoundedCornerShape(8.dp),
@@ -1594,25 +1621,41 @@ private fun TemporaryMemoPanel(
                     modifier = Modifier.size(84.dp)
                 )
             }
-            Column(Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    "${doneEntries.size}/$totalCount 件 完了",
+                    color = Color(0xFF2E7D32),
+                    fontSize = 13.sp,
+                    lineHeight = 15.sp
+                )
                 Text(
                     text = memo.title.ifBlank { TemporaryMemoTitle },
                     color = Color(0xFFD32F2F),
                     fontSize = 16.sp,
+                    lineHeight = 18.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text("未購入 ${activeEntries.size} 件", color = Color(0xFF2E7D32), fontSize = 13.sp)
-                Text("完了 ${doneEntries.size} 件", color = Color(0xFF333333), fontSize = 13.sp)
             }
             Divider(color = Color(0xFFE0E0E0))
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .onGloballyPositioned { onListPositioned(it.boundsInWindow()) }
+                    .scrollable(
+                        state = listScrollState,
+                        orientation = Orientation.Vertical
+                    ),
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                userScrollEnabled = false
             ) {
                 if (activeEntries.isEmpty() && doneEntries.isEmpty()) {
                     item {
@@ -1683,62 +1726,60 @@ private fun HomeLeftBottomControls(
     onAddMemo: () -> Unit,
     gridState: LazyGridState
 ) {
-    Row(
+    Box(
         modifier = modifier
             .background(Color.White.copy(alpha = 0.98f))
-            .padding(start = 6.dp, top = 6.dp, bottom = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(start = 6.dp, top = 6.dp, bottom = 6.dp, end = 6.dp)
     ) {
-        HomeFixedActionButton(
-            icon = "+",
-            label = "追加",
-            height = 78.dp,
-            containerColor = Color(0xFFEAF4FF),
-            contentColor = Color(0xFF1976D2),
+        HomeAddScrollButton(
+            gridState = gridState,
             onClick = onAddMemo,
-            iconFontSize = 26.sp,
-            labelFontSize = 15.sp,
-            modifier = Modifier.weight(1f)
-        )
-        Column(
             modifier = Modifier
-                .width(82.dp)
-                .fillMaxHeight()
-        ) {
-            HomeScrollFlickArea(
-                gridState = gridState,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
+                .align(Alignment.BottomEnd)
+                .fillMaxWidth()
+                .aspectRatio(1f)
+        )
     }
 }
 
 @Composable
-private fun HomeScrollFlickArea(
+private fun HomeAddScrollButton(
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
+    onClick: () -> Unit
 ) {
     val scrollState = rememberScrollableState { delta ->
         -gridState.dispatchRawDelta(-delta)
     }
     Card(
-        modifier = modifier.scrollable(
-            state = scrollState,
-            orientation = Orientation.Vertical
-        ),
-        shape = RoundedCornerShape(6.dp),
+        modifier = modifier
+            .scrollable(
+                state = scrollState,
+                orientation = Orientation.Vertical
+            )
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(
-            containerColor = Color(0xFFF8BBD0),
+            containerColor = Color(0xFFEAF4FF),
         ),
-        border = BorderStroke(2.dp, Color(0xFFC2185B)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        border = BorderStroke(2.dp, Color(0xFF90CAF9)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 5.dp),
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
-            Text("↕", color = Color(0xFFAD1457), fontSize = 40.sp, fontWeight = FontWeight.Bold, lineHeight = 40.sp)
+            Row(
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("+", color = Color(0xFF1976D2), fontSize = 40.sp, fontWeight = FontWeight.Bold, lineHeight = 36.sp)
+                    Text("追加", color = Color(0xFF1976D2), fontSize = 18.sp, fontWeight = FontWeight.Bold, lineHeight = 20.sp)
+                }
+                Spacer(Modifier.width(12.dp))
+                Text("↕", color = Color(0xFFAD1457), fontSize = 46.sp, fontWeight = FontWeight.Bold, lineHeight = 44.sp)
+            }
         }
     }
 }
