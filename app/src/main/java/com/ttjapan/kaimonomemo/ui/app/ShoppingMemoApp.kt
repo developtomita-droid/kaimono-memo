@@ -21,6 +21,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberScrollableState
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -286,6 +288,23 @@ fun ShoppingMemoApp() {
     val trashedMemos = memos.filter { !isTemporaryMemo(it) && it.trashed }
 
     fun persist() = saveMemos(context, memos)
+
+    fun applyMemoOrder(orderedActiveIds: List<String>) {
+        val currentActive = memos.filter { !isTemporaryMemo(it) && !it.trashed }
+        if (orderedActiveIds.size != currentActive.size || orderedActiveIds.toSet() != currentActive.map { it.id }.toSet()) return
+        val orderedActive = orderedActiveIds.mapNotNull { id -> currentActive.firstOrNull { it.id == id } }
+        if (orderedActive.size != currentActive.size) return
+        var activeIndex = 0
+        memos.indices.forEach { index ->
+            val memo = memos[index]
+            if (!isTemporaryMemo(memo) && !memo.trashed) {
+                memos[index] = orderedActive[activeIndex]
+                activeIndex++
+            }
+        }
+        persist()
+    }
+
     fun updateOneHandMode(enabled: Boolean) {
         oneHandModeEnabled = enabled
         saveOneHandModeEnabled(context, enabled)
@@ -383,6 +402,7 @@ fun ShoppingMemoApp() {
                                 recentlyMovedEntryIds.add(entry.id)
                                 persist()
                             },
+                            onApplyMemoOrder = ::applyMemoOrder,
                             onDeleteMemo = {
                                 if (!isTemporaryMemo(it)) it.trashed = true
                                 persist()
@@ -469,6 +489,7 @@ private fun AdvancedHomeScreen(
     onOpenMemo: (ShoppingMemo) -> Unit,
     onOpenTemporaryMemo: () -> Unit,
     onTemporaryEntryMoved: (ShoppingMemo, ShoppingEntry) -> Unit,
+    onApplyMemoOrder: (List<String>) -> Unit,
     onDeleteMemo: (ShoppingMemo) -> Unit,
     onRestoreMemo: (ShoppingMemo) -> Unit,
     onEraseMemo: (ShoppingMemo) -> Unit,
@@ -483,11 +504,13 @@ private fun AdvancedHomeScreen(
     val activeGridState = rememberLazyGridState()
     val trashGridState = rememberLazyGridState()
     val memoCardBounds = remember { mutableStateMapOf<String, Rect>() }
+    val homeMemoOrderIds = remember { mutableStateListOf<String>() }
     val sparklingMemoIds = remember { mutableStateListOf<String>() }
     var draggingId by remember { mutableStateOf<String?>(null) }
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
     var dragPoint by remember { mutableStateOf(Offset.Zero) }
     var draggedCardBounds by remember { mutableStateOf<Rect?>(null) }
+    var homeMemoOrderChanged by remember { mutableStateOf(false) }
     var imageChangeBounds by remember { mutableStateOf<Rect?>(null) }
     var cardTrashBounds by remember { mutableStateOf<Rect?>(null) }
     var pendingImageMemo by remember { mutableStateOf<ShoppingMemo?>(null) }
@@ -506,6 +529,24 @@ private fun AdvancedHomeScreen(
         !trashGridState.canScrollBackward
     }
     val latestCurrentListAtTop by rememberUpdatedState(currentListAtTop)
+    val sourceMemoIds = memos.map { it.id }
+    val orderedHomeMemos = run {
+        val byId = memos.associateBy { it.id }
+        val ordered = homeMemoOrderIds.mapNotNull { byId[it] }
+        if (ordered.size == memos.size) ordered else memos
+    }
+
+    LaunchedEffect(sourceMemoIds, draggingId) {
+        if (draggingId == null) {
+            homeMemoOrderIds.clear()
+            homeMemoOrderIds.addAll(sourceMemoIds)
+        } else {
+            homeMemoOrderIds.removeAll { it !in sourceMemoIds }
+            sourceMemoIds.forEach { id ->
+                if (id !in homeMemoOrderIds) homeMemoOrderIds.add(id)
+            }
+        }
+    }
 
     fun moveTemporaryEntryTo(targetMemo: ShoppingMemo, entry: ShoppingEntry) {
         temporaryMemo.entries.remove(entry)
@@ -524,6 +565,49 @@ private fun AdvancedHomeScreen(
             delay(5000)
             sparklingMemoIds.remove(targetMemo.id)
         }
+    }
+
+    fun updateHomeMemoOrderDuringDrag() {
+        val draggedMemoId = draggingId ?: return
+        if (imageChangeBounds?.contains(dragPoint) == true || cardTrashBounds?.contains(dragPoint) == true) {
+            return
+        }
+        if (homeMemoOrderIds.isEmpty()) homeMemoOrderIds.addAll(sourceMemoIds)
+        val target = orderedHomeMemos.firstOrNull { memo ->
+            memo.id != draggedMemoId && memoCardBounds[memo.id]?.contains(dragPoint) == true
+        } ?: return
+        val targetBounds = memoCardBounds[target.id] ?: return
+        val from = homeMemoOrderIds.indexOf(draggedMemoId)
+        val targetIndex = homeMemoOrderIds.indexOf(target.id)
+        if (from < 0 || targetIndex < 0) return
+
+        val insertBefore = dragPoint.y < targetBounds.center.y
+        var to = if (insertBefore) targetIndex else targetIndex + 1
+        if (from < to) to--
+        if (from == to) return
+
+        val movedId = homeMemoOrderIds.removeAt(from)
+        homeMemoOrderIds.add(to.coerceIn(0, homeMemoOrderIds.size), movedId)
+        homeMemoOrderChanged = true
+    }
+
+    fun resetHomeMemoOrder() {
+        homeMemoOrderIds.clear()
+        homeMemoOrderIds.addAll(sourceMemoIds)
+        homeMemoOrderChanged = false
+    }
+
+    fun finishHomeMemoDrag() {
+        val memo = memos.firstOrNull { it.id == draggingId }
+        when {
+            memo != null && imageChangeBounds?.contains(dragPoint) == true -> pendingImageMemo = memo
+            memo != null && cardTrashBounds?.contains(dragPoint) == true -> onDeleteMemo(memo)
+            memo != null && homeMemoOrderChanged -> onApplyMemoOrder(homeMemoOrderIds.toList())
+        }
+        draggingId = null
+        dragOffset = Offset.Zero
+        draggedCardBounds = null
+        homeMemoOrderChanged = false
     }
 
     fun startOneHandFling(initialVelocityY: Float) {
@@ -646,7 +730,7 @@ private fun AdvancedHomeScreen(
             ) { page ->
                 if (page == 0) {
                     HomeItemsPage(
-                        memos = memos,
+                        memos = orderedHomeMemos,
                         temporaryMemo = temporaryMemo,
                         gridState = activeGridState,
                         memoCardBounds = memoCardBounds,
@@ -657,24 +741,20 @@ private fun AdvancedHomeScreen(
                             draggingId = memo.id
                             dragOffset = Offset.Zero
                             draggedCardBounds = bounds
+                            homeMemoOrderChanged = false
                             dragPoint = if (bounds == null) start else Offset(bounds.left + start.x, bounds.top + start.y)
                         },
                         onDrag = { amount ->
                             dragOffset += amount
                             dragPoint += amount
+                            updateHomeMemoOrderDuringDrag()
                         },
-                        onDragEnd = {
-                            val memo = memos.firstOrNull { it.id == draggingId }
-                            when {
-                                memo != null && imageChangeBounds?.contains(dragPoint) == true -> pendingImageMemo = memo
-                                memo != null && cardTrashBounds?.contains(dragPoint) == true -> onDeleteMemo(memo)
-                            }
-                            draggingId = null
-                            dragOffset = Offset.Zero
-                        },
+                        onDragEnd = { finishHomeMemoDrag() },
                         onDragCancel = {
                             draggingId = null
                             dragOffset = Offset.Zero
+                            draggedCardBounds = null
+                            resetHomeMemoOrder()
                         },
                         onOpenMemo = onOpenMemo,
                         onToggleFavorite = onToggleFavorite,
@@ -1514,6 +1594,8 @@ private fun HomeLeftBottomControls(
             containerColor = Color(0xFFEAF4FF),
             contentColor = Color(0xFF1976D2),
             onClick = onAddMemo,
+            iconFontSize = 26.sp,
+            labelFontSize = 15.sp,
             modifier = Modifier.weight(1f)
         )
         Column(
@@ -1534,9 +1616,12 @@ private fun HomeScrollFlickArea(
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
 ) {
+    val scrollState = rememberScrollableState { delta ->
+        -gridState.dispatchRawDelta(-delta)
+    }
     Card(
         modifier = modifier.scrollable(
-            state = gridState,
+            state = scrollState,
             orientation = Orientation.Vertical
         ),
         shape = RoundedCornerShape(6.dp),
@@ -1546,13 +1631,11 @@ private fun HomeScrollFlickArea(
         border = BorderStroke(1.dp, Color(0xFFD81B60)),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
     ) {
-        Column(
+        Box(
             modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceEvenly
+            contentAlignment = Alignment.Center
         ) {
-            Text("↑", color = Color.Black, fontSize = 28.sp, fontWeight = FontWeight.Bold, lineHeight = 28.sp)
-            Text("↓", color = Color.Black, fontSize = 28.sp, fontWeight = FontWeight.Bold, lineHeight = 28.sp)
+            Text("↕", color = Color.Black, fontSize = 40.sp, fontWeight = FontWeight.Bold, lineHeight = 40.sp)
         }
     }
 }
@@ -1565,6 +1648,8 @@ private fun HomeFixedActionButton(
     contentColor: Color,
     modifier: Modifier = Modifier,
     height: Dp = 52.dp,
+    iconFontSize: androidx.compose.ui.unit.TextUnit = 20.sp,
+    labelFontSize: androidx.compose.ui.unit.TextUnit = 12.sp,
     onClick: () -> Unit
 ) {
     Button(
@@ -1580,8 +1665,8 @@ private fun HomeFixedActionButton(
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(icon, fontSize = 20.sp, fontWeight = FontWeight.Bold, lineHeight = 20.sp)
-            Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, lineHeight = 12.sp)
+            Text(icon, fontSize = iconFontSize, fontWeight = FontWeight.Bold, lineHeight = iconFontSize)
+            Text(label, fontSize = labelFontSize, fontWeight = FontWeight.Bold, lineHeight = labelFontSize)
         }
     }
 }
@@ -1678,11 +1763,12 @@ private fun MemoCard(
 ) {
     val activeCount = memo.entries.count { !it.checked && it.name.isNotBlank() }
     val doneCount = memo.entries.count { it.checked }
+    val totalCount = activeCount + doneCount
     val sparkleAlpha = rememberSparkleAlpha(sparkling)
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .height(300.dp)
+            .heightIn(min = 150.dp)
             .clickable(onClick = onClick)
             .sparkleOverlay(sparkleAlpha),
         shape = RoundedCornerShape(12.dp),
@@ -1690,50 +1776,51 @@ private fun MemoCard(
         border = BorderStroke(1.dp, Color(0xFFC8C8C8)),
         colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
-        Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxWidth()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(140.dp)
+                    .height(86.dp)
                     .background(Color(0xFFE8F5E9)),
                 contentAlignment = Alignment.Center
             ) {
-                Text("🛒", fontSize = 76.sp)
+                Text("🛒", fontSize = 48.sp)
                 ShoppingPatternImage(pattern = memo.imagePattern, modifier = Modifier.fillMaxSize())
                 IconButton(
                     onClick = onToggleFavorite,
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(4.dp)
-                        .size(54.dp)
+                        .padding(3.dp)
+                        .size(34.dp)
                         .background(Color.White.copy(alpha = 0.9f), CircleShape)
                 ) {
                     Text(
                         text = if (memo.favorite) "★" else "☆",
                         color = if (memo.favorite) Color(0xFFFFA000) else Color(0xFF555555),
-                        fontSize = 36.sp
+                        fontSize = 22.sp
                     )
                 }
             }
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(10.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
             ) {
-                Text("未購入 $activeCount 件", color = Color(0xFF2E7D32), fontSize = 22.sp)
+                Text(
+                    "$doneCount/$totalCount 件 完了",
+                    color = Color(0xFF2E7D32),
+                    fontSize = 16.sp,
+                    lineHeight = 18.sp
+                )
                 Text(
                     text = memo.title.ifBlank { "タイトル入力" },
                     color = Color(0xFF212121),
-                    fontSize = 28.sp,
+                    fontSize = 22.sp,
+                    lineHeight = 24.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.weight(1f))
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                    Text("完了 $doneCount 件", color = Color(0xFF212121), fontSize = 24.sp, modifier = Modifier.weight(1f))
-                    Text("編集中", color = Color(0xFF16A34A), fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                }
             }
         }
     }
