@@ -573,10 +573,22 @@ private fun AdvancedHomeScreen(
             return
         }
         if (homeMemoOrderIds.isEmpty()) homeMemoOrderIds.addAll(sourceMemoIds)
-        val target = orderedHomeMemos.firstOrNull { memo ->
-            memo.id != draggedMemoId && memoCardBounds[memo.id]?.contains(dragPoint) == true
-        } ?: return
-        val targetBounds = memoCardBounds[target.id] ?: return
+        val targets = orderedHomeMemos.mapNotNull { memo ->
+            if (memo.id == draggedMemoId) {
+                null
+            } else {
+                memoCardBounds[memo.id]?.let { bounds -> memo to bounds }
+            }
+        }.filter { (_, bounds) ->
+            dragPoint.x >= bounds.left - 48f && dragPoint.x <= bounds.right + 48f
+        }
+        val targetPair = targets.firstOrNull { (_, bounds) ->
+            bounds.contains(dragPoint)
+        } ?: targets.minByOrNull { (_, bounds) ->
+            kotlin.math.abs(bounds.center.y - dragPoint.y)
+        }
+        val target = targetPair?.first ?: return
+        val targetBounds = targetPair.second
         val from = homeMemoOrderIds.indexOf(draggedMemoId)
         val targetIndex = homeMemoOrderIds.indexOf(target.id)
         if (from < 0 || targetIndex < 0) return
@@ -736,6 +748,8 @@ private fun AdvancedHomeScreen(
                         memoCardBounds = memoCardBounds,
                         sparklingMemoIds = sparklingMemoIds,
                         draggingId = draggingId,
+                        draggedCardBounds = draggedCardBounds,
+                        dragPoint = dragPoint,
                         dragOffset = dragOffset,
                         onDragStart = { memo, start, bounds ->
                             draggingId = memo.id
@@ -749,6 +763,7 @@ private fun AdvancedHomeScreen(
                             dragPoint += amount
                             updateHomeMemoOrderDuringDrag()
                         },
+                        onAutoScrollTick = { updateHomeMemoOrderDuringDrag() },
                         onDragEnd = { finishHomeMemoDrag() },
                         onDragCancel = {
                             draggingId = null
@@ -905,9 +920,12 @@ private fun HomeItemsPage(
     memoCardBounds: MutableMap<String, Rect>,
     sparklingMemoIds: List<String>,
     draggingId: String?,
+    draggedCardBounds: Rect?,
+    dragPoint: Offset,
     dragOffset: Offset,
     onDragStart: (ShoppingMemo, Offset, Rect?) -> Unit,
     onDrag: (Offset) -> Unit,
+    onAutoScrollTick: () -> Unit,
     onDragEnd: () -> Unit,
     onDragCancel: () -> Unit,
     onOpenMemo: (ShoppingMemo) -> Unit,
@@ -926,11 +944,105 @@ private fun HomeItemsPage(
     onTemporaryDragCancel: () -> Unit
 ) {
     val controlHeight = 90.dp
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    var pageBounds by remember { mutableStateOf<Rect?>(null) }
+    var gridBounds by remember { mutableStateOf<Rect?>(null) }
+    val controlHeightPx = with(density) { controlHeight.toPx() }
+    val autoScrollEdgePx = with(density) { 8.dp.toPx() }
+    val autoScrollDragThresholdPx = with(density) { 32.dp.toPx() }
+    val autoScrollStepPx = with(density) { 38.dp.toPx() }
+    val latestMemos by rememberUpdatedState(memos)
+    val latestDraggingId by rememberUpdatedState(draggingId)
+    val latestDraggedCardBounds by rememberUpdatedState(draggedCardBounds)
+    val latestDragOffset by rememberUpdatedState(dragOffset)
+    val latestPageBounds by rememberUpdatedState(pageBounds)
+    val latestGridBounds by rememberUpdatedState(gridBounds)
+    val latestOnDragStart by rememberUpdatedState(onDragStart)
+    val latestOnDrag by rememberUpdatedState(onDrag)
+    val latestOnAutoScrollTick by rememberUpdatedState(onAutoScrollTick)
+    val latestOnDragEnd by rememberUpdatedState(onDragEnd)
+    val latestOnDragCancel by rememberUpdatedState(onDragCancel)
+
+    LaunchedEffect(draggingId) {
+        if (draggingId == null) return@LaunchedEffect
+        while (latestDraggingId != null) {
+            val bounds = latestGridBounds
+            val draggedBounds = latestDraggedCardBounds
+            if (bounds != null) {
+                val effectiveBottom = (bounds.bottom - controlHeightPx - 8f).coerceAtLeast(bounds.top)
+                val visualTop = (draggedBounds?.top ?: Float.POSITIVE_INFINITY) + latestDragOffset.y
+                val visualBottom = (draggedBounds?.bottom ?: Float.NEGATIVE_INFINITY) + latestDragOffset.y
+                val visualCenterX = (draggedBounds?.center?.x ?: Float.NEGATIVE_INFINITY) + latestDragOffset.x
+                val inLeftColumn = visualCenterX >= bounds.left - 48f && visualCenterX <= bounds.right + 48f
+                val movingUp = latestDragOffset.y <= -autoScrollDragThresholdPx
+                val movingDown = latestDragOffset.y >= autoScrollDragThresholdPx
+                val scrollAmount = if (draggedBounds != null && inLeftColumn) {
+                    when {
+                        movingUp && visualTop <= bounds.top - autoScrollEdgePx && gridState.canScrollBackward -> -autoScrollStepPx
+                        movingDown && visualBottom >= effectiveBottom + autoScrollEdgePx && gridState.canScrollForward -> autoScrollStepPx
+                        else -> 0f
+                    }
+                } else {
+                    0f
+                }
+                if (scrollAmount != 0f) {
+                    gridState.scrollBy(scrollAmount)
+                    withFrameNanos { }
+                    latestOnAutoScrollTick()
+                }
+            }
+            delay(45)
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .padding(10.dp)
+            .onGloballyPositioned { pageBounds = it.boundsInWindow() }
+            .pointerInput(Unit) {
+                var activeCardDrag = false
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { start ->
+                        activeCardDrag = false
+                        if (latestDraggingId != null) return@detectDragGesturesAfterLongPress
+                        val hostBounds = latestPageBounds ?: return@detectDragGesturesAfterLongPress
+                        val windowPoint = Offset(
+                            x = hostBounds.left + start.x,
+                            y = hostBounds.top + start.y
+                        )
+                        val memo = latestMemos.firstOrNull { memo ->
+                            memoCardBounds[memo.id]?.contains(windowPoint) == true
+                        } ?: return@detectDragGesturesAfterLongPress
+                        val cardBounds = memoCardBounds[memo.id] ?: return@detectDragGesturesAfterLongPress
+                        latestOnDragStart(
+                            memo,
+                            Offset(windowPoint.x - cardBounds.left, windowPoint.y - cardBounds.top),
+                            cardBounds
+                        )
+                        activeCardDrag = true
+                    },
+                    onDrag = { change, amount ->
+                        if (activeCardDrag) {
+                            change.consume()
+                            latestOnDrag(amount)
+                        }
+                    },
+                    onDragEnd = {
+                        if (activeCardDrag) {
+                            latestOnDragEnd()
+                            activeCardDrag = false
+                        }
+                    },
+                    onDragCancel = {
+                        if (activeCardDrag) {
+                            latestOnDragCancel()
+                            activeCardDrag = false
+                        }
+                    }
+                )
+            }
     ) {
         Row(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -945,9 +1057,11 @@ private fun HomeItemsPage(
                 state = gridState,
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .onGloballyPositioned { gridBounds = it.boundsInWindow() },
                 contentPadding = PaddingValues(bottom = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                userScrollEnabled = draggingId == null
             ) {
                 items(memos, key = { it.id }) { memo ->
                     var cardBounds by remember { mutableStateOf<Rect?>(null) }
@@ -955,31 +1069,20 @@ private fun HomeItemsPage(
                     MemoCard(
                         memo = memo,
                         sparkling = sparklingMemoIds.contains(memo.id),
-                        modifier = Modifier
+                        modifier = (if (isDragging) Modifier else Modifier.animateItem())
                             .graphicsLayer {
-                                translationX = if (isDragging) dragOffset.x else 0f
-                                translationY = if (isDragging) dragOffset.y else 0f
-                                scaleX = if (isDragging) 1.05f else 1f
-                                scaleY = if (isDragging) 1.05f else 1f
-                                shadowElevation = if (isDragging) 18f else 0f
+                                translationX = 0f
+                                translationY = 0f
+                                scaleX = 1f
+                                scaleY = 1f
+                                shadowElevation = 0f
                                 alpha = if (isDragging) 0f else 1f
                             }
-                            .zIndex(if (isDragging) 20f else 0f)
+                            .zIndex(0f)
                             .onGloballyPositioned {
                                 val bounds = it.boundsInWindow()
                                 cardBounds = bounds
                                 memoCardBounds[memo.id] = bounds
-                            }
-                            .pointerInput(memo.id) {
-                                detectDragGesturesAfterLongPress(
-                                    onDragStart = { start -> onDragStart(memo, start, cardBounds) },
-                                    onDrag = { change, amount ->
-                                        change.consume()
-                                        onDrag(amount)
-                                    },
-                                    onDragEnd = onDragEnd,
-                                    onDragCancel = onDragCancel
-                                )
                             },
                         onClick = { if (draggingId == null) onOpenMemo(memo) },
                         onToggleFavorite = { onToggleFavorite(memo) }
@@ -1626,16 +1729,16 @@ private fun HomeScrollFlickArea(
         ),
         shape = RoundedCornerShape(6.dp),
         colors = CardDefaults.cardColors(
-            containerColor = Color(0xFFFFC1D8),
+            containerColor = Color(0xFFF8BBD0),
         ),
-        border = BorderStroke(1.dp, Color(0xFFD81B60)),
+        border = BorderStroke(2.dp, Color(0xFFC2185B)),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
-            Text("↕", color = Color.Black, fontSize = 40.sp, fontWeight = FontWeight.Bold, lineHeight = 40.sp)
+            Text("↕", color = Color(0xFFAD1457), fontSize = 40.sp, fontWeight = FontWeight.Bold, lineHeight = 40.sp)
         }
     }
 }
