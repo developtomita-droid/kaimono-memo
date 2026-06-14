@@ -1,3 +1,15 @@
 <resources>
     <string name="app_name">kaimonomemo</string>
+    <string name="support_ad_banner_dummy">AdMob バナー広告（ダミー）</string>
+    <string name="support_ad_title">開発者を応援する</string>
+    <string name="support_ad_thanks">いつもありがとうございます！</string>
+    <string name="support_ad_message_before">よろしければ、広告を視聴して</string>
+    <string name="support_ad_message_emphasis">開発者を応援</string>
+    <string name="support_ad_message_after">していただけると嬉しいです。</string>
+    <string name="support_ad_footer_title">応援してくださり、ありがとうございます！</string>
+    <string name="support_ad_footer_body">皆さまの応援が、より良いアプリ作りの大きな力になっています。</string>
+    <string name="support_ad_watch_button">動画広告を視聴して応援する</string>
+    <string name="support_ad_watch_button_done">本日の応援は完了しました</string>
+    <string name="support_ad_watch_duration">（約30秒）</string>
+    <string name="support_ad_watch_limit">視聴は1日1回までです</string>
 </resources>

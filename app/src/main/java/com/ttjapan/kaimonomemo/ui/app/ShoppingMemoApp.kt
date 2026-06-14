@@ -1,7 +1,11 @@
 package com.ttjapan.kaimonomemo.ui.app
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,6 +20,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
@@ -40,6 +46,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -134,6 +141,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import com.ttjapan.kaimonomemo.R
@@ -6408,24 +6416,17 @@ private fun AdsSupportScreen(
     ) {
         Column(Modifier.fillMaxSize()) {
             DummyBannerAd(
+                modifier = Modifier.fillMaxWidth()
+            )
+            SupportDeveloperWebView(
+                watchedToday = watchedToday,
+                onWatchAd = {
+                    if (!watchedToday) showVideoAd = true
+                },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .statusBarsPadding()
+                    .weight(1f)
             )
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                item {
-                    SupportDeveloperPanel(
-                        watchedToday = watchedToday,
-                        onWatchAd = {
-                            if (!watchedToday) showVideoAd = true
-                        }
-                    )
-                }
-            }
         }
 
         if (showVideoAd) {
@@ -6437,6 +6438,370 @@ private fun AdsSupportScreen(
                     showVideoAd = false
                 }
             )
+        }
+    }
+}
+
+@Composable
+private fun SupportDeveloperWebView(
+    watchedToday: Boolean,
+    onWatchAd: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val latestOnWatchAd by rememberUpdatedState(onWatchAd)
+    val html = remember(context, watchedToday) {
+        supportDeveloperHtml(context, watchedToday)
+    }
+
+    AndroidView(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.White),
+        factory = { viewContext ->
+            WebView(viewContext).apply {
+                setBackgroundColor(android.graphics.Color.WHITE)
+                settings.setSupportZoom(true)
+                settings.builtInZoomControls = true
+                settings.displayZoomControls = false
+                settings.loadWithOverviewMode = true
+                settings.useWideViewPort = true
+                settings.allowFileAccess = true
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView?,
+                        request: WebResourceRequest?
+                    ): Boolean {
+                        val url = request?.url?.toString() ?: return false
+                        return handleSupportDeveloperLink(url, latestOnWatchAd)
+                    }
+
+                    @Deprecated("Deprecated in Android")
+                    override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                        return handleSupportDeveloperLink(url, latestOnWatchAd)
+                    }
+                }
+                tag = html
+                loadDataWithBaseURL(
+                    "file:///android_asset/support_ads/",
+                    html,
+                    "text/html",
+                    "UTF-8",
+                    null
+                )
+            }
+        },
+        update = { webView ->
+            if (webView.tag != html) {
+                webView.tag = html
+                webView.loadDataWithBaseURL(
+                    "file:///android_asset/support_ads/",
+                    html,
+                    "text/html",
+                    "UTF-8",
+                    null
+                )
+            }
+        }
+    )
+}
+
+private fun handleSupportDeveloperLink(
+    url: String?,
+    onWatchAd: () -> Unit
+): Boolean {
+    if (url == "kaimonomemo://watch-ad") {
+        onWatchAd()
+        return true
+    }
+    return false
+}
+
+private data class SupportDeveloperText(
+    val title: String,
+    val thanks: String,
+    val messageBefore: String,
+    val messageEmphasis: String,
+    val messageAfter: String,
+    val footerTitle: String,
+    val footerBody: String,
+    val watchButton: String,
+    val watchButtonDone: String,
+    val watchDuration: String,
+    val watchLimit: String
+)
+
+private fun supportDeveloperText(context: Context): SupportDeveloperText {
+    return SupportDeveloperText(
+        title = context.getString(R.string.support_ad_title),
+        thanks = context.getString(R.string.support_ad_thanks),
+        messageBefore = context.getString(R.string.support_ad_message_before),
+        messageEmphasis = context.getString(R.string.support_ad_message_emphasis),
+        messageAfter = context.getString(R.string.support_ad_message_after),
+        footerTitle = context.getString(R.string.support_ad_footer_title),
+        footerBody = context.getString(R.string.support_ad_footer_body),
+        watchButton = context.getString(R.string.support_ad_watch_button),
+        watchButtonDone = context.getString(R.string.support_ad_watch_button_done),
+        watchDuration = context.getString(R.string.support_ad_watch_duration),
+        watchLimit = context.getString(R.string.support_ad_watch_limit)
+    )
+}
+
+private fun supportDeveloperHtml(
+    context: Context,
+    watchedToday: Boolean
+): String {
+    val text = supportDeveloperText(context)
+    val watchLabel = if (watchedToday) text.watchButtonDone else text.watchButton
+    val watchTag = if (watchedToday) {
+        """<div class="watch-button disabled">"""
+    } else {
+        """<a class="watch-button" href="kaimonomemo://watch-ad">"""
+    }
+    val watchCloseTag = if (watchedToday) "</div>" else "</a>"
+
+    return """
+        <!doctype html>
+        <html lang="ja">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=4.0, user-scalable=yes">
+          <style>
+            html, body {
+              margin: 0;
+              min-height: 100%;
+              background: #fffdf8;
+              color: #3c2b1f;
+              font-family: -apple-system, BlinkMacSystemFont, "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif;
+            }
+            * { box-sizing: border-box; }
+            .page {
+              min-height: 100vh;
+              display: flex;
+              flex-direction: column;
+              background: #fffdf8;
+            }
+            .title {
+              padding: 10px 10px 8px;
+              text-align: center;
+              color: #193f1e;
+              font-size: clamp(24px, 7.4vw, 36px);
+              font-weight: 900;
+              letter-spacing: 0.02em;
+              background: linear-gradient(180deg, #f2fae8 0%, #eef8df 100%);
+              border-bottom: 1px solid #e3ecd7;
+            }
+            .wave {
+              height: 18px;
+              background:
+                radial-gradient(70% 24px at 25% -2px, transparent 98%, #fffdf8 100%),
+                radial-gradient(70% 24px at 75% -2px, transparent 98%, #fffdf8 100%),
+                #eef8df;
+            }
+            .content {
+              flex: 1;
+              display: flex;
+              flex-direction: column;
+              justify-content: space-evenly;
+              gap: clamp(10px, 2.2vh, 20px);
+              padding: 4px 10px 12px;
+            }
+            .thanks {
+              margin-top: 2px;
+              text-align: center;
+              font-size: clamp(16px, 4.9vw, 25px);
+              font-weight: 900;
+              transform: rotate(-4deg);
+            }
+            .hero {
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              min-height: 126px;
+            }
+            .hero-image {
+              display: block;
+              width: min(100%, 560px);
+              height: auto;
+            }
+            .message {
+              margin: 0 auto;
+              max-width: 620px;
+              text-align: center;
+              font-size: clamp(16px, 4.4vw, 23px);
+              line-height: 1.45;
+              font-weight: 800;
+            }
+            .message .emphasis { color: #f36d76; }
+            .thanks-card {
+              display: grid;
+              grid-template-columns: 74px 1fr;
+              align-items: center;
+              gap: 12px;
+              width: 100%;
+              max-width: 680px;
+              margin: 0 auto;
+              padding: 8px 12px;
+              border: 2px solid #ececec;
+              border-radius: 22px;
+              background: rgba(255,255,255,0.92);
+              box-shadow: 0 1px 4px rgba(85, 68, 44, 0.06);
+            }
+            .cat-image {
+              width: 72px;
+              height: 58px;
+              object-fit: contain;
+            }
+            .thanks-title {
+              font-size: clamp(15px, 4.1vw, 20px);
+              font-weight: 900;
+            }
+            .thanks-body {
+              margin-top: 2px;
+              font-size: clamp(13px, 3.6vw, 17px);
+              line-height: 1.35;
+              font-weight: 650;
+            }
+            .watch-button {
+              min-height: 66px;
+              width: 100%;
+              max-width: 700px;
+              margin: 0 auto;
+              display: grid;
+              grid-template-columns: 64px 1fr;
+              align-items: center;
+              gap: 10px;
+              padding: 9px 20px;
+              border-radius: 28px;
+              color: #fff;
+              text-decoration: none;
+              background: linear-gradient(180deg, #8ac174 0%, #63a852 70%, #568f47 100%);
+              box-shadow: inset 0 -6px 0 rgba(34, 96, 35, 0.20), 0 3px 8px rgba(77, 117, 58, 0.24);
+            }
+            .watch-button.disabled {
+              background: linear-gradient(180deg, #9eb593 0%, #78936f 70%, #6f8566 100%);
+            }
+            .play-icon {
+              width: 52px;
+              height: 40px;
+              border: 6px solid rgba(255,255,255,0.95);
+              border-radius: 4px;
+              position: relative;
+            }
+            .play-icon:before,
+            .play-icon:after {
+              content: "";
+              position: absolute;
+              top: -6px;
+              bottom: -6px;
+              width: 6px;
+              background: rgba(255,255,255,0.92);
+            }
+            .play-icon:before { left: 8px; }
+            .play-icon:after { right: 8px; }
+            .play-triangle {
+              position: absolute;
+              left: 17px;
+              top: 6px;
+              width: 0;
+              height: 0;
+              border-top: 9px solid transparent;
+              border-bottom: 9px solid transparent;
+              border-left: 14px solid rgba(255,255,255,0.95);
+            }
+            .watch-text {
+              text-align: center;
+              font-size: clamp(18px, 5.1vw, 27px);
+              line-height: 1.2;
+              font-weight: 900;
+              text-shadow: 0 1px 1px rgba(43, 91, 38, 0.35);
+            }
+            .duration {
+              display: inline-block;
+              margin-top: 1px;
+              padding: 1px 12px 2px;
+              border-radius: 999px;
+              background: rgba(78, 139, 65, 0.38);
+              font-size: 0.72em;
+            }
+            .limit {
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              gap: 5px;
+              color: #5f6b5b;
+              font-size: clamp(12px, 3.5vw, 16px);
+              font-weight: 700;
+            }
+            .shield {
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              width: 18px;
+              height: 18px;
+              border-radius: 50%;
+              background: #77aa61;
+              color: #fff;
+              font-size: 12px;
+              font-weight: 900;
+            }
+            @media (max-height: 640px) {
+              .content { gap: 8px; padding-bottom: 8px; }
+              .hero { min-height: 92px; }
+              .hero-image { width: min(100%, 430px); }
+              .thanks-card { padding: 7px 10px; grid-template-columns: 62px 1fr; }
+              .cat-image { width: 60px; height: 48px; }
+              .watch-button { min-height: 56px; border-radius: 22px; }
+              .play-icon { transform: scale(0.88); transform-origin: left center; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="page">
+            <header class="title">${text.title.htmlEscaped()}</header>
+            <div class="wave"></div>
+            <main class="content">
+              <div class="thanks">${text.thanks.htmlEscaped()}</div>
+              <section class="hero" aria-hidden="true">
+                <img class="hero-image" src="support_heart_hands.png" alt="">
+              </section>
+              <p class="message">
+                ${text.messageBefore.htmlEscaped()}<br>
+                <span class="emphasis">${text.messageEmphasis.htmlEscaped()}</span>${text.messageAfter.htmlEscaped()}
+              </p>
+              <section class="thanks-card">
+                <img class="cat-image" src="support_cat.png" alt="">
+                <div>
+                  <div class="thanks-title">${text.footerTitle.htmlEscaped()}</div>
+                  <div class="thanks-body">${text.footerBody.htmlEscaped()}</div>
+                </div>
+              </section>
+              $watchTag
+                <span class="play-icon"><span class="play-triangle"></span></span>
+                <span class="watch-text">
+                  ${watchLabel.htmlEscaped()}
+                  <span class="duration">${text.watchDuration.htmlEscaped()}</span>
+                </span>
+              $watchCloseTag
+              <div class="limit"><span class="shield">&#x2713;</span>${text.watchLimit.htmlEscaped()}</div>
+            </main>
+          </div>
+        </body>
+        </html>
+    """.trimIndent()
+}
+
+private fun String.htmlEscaped(): String {
+    return buildString(length) {
+        this@htmlEscaped.forEach { char ->
+            when (char) {
+                '&' -> append("&amp;")
+                '<' -> append("&lt;")
+                '>' -> append("&gt;")
+                '"' -> append("&quot;")
+                '\'' -> append("&#39;")
+                else -> append(char)
+            }
         }
     }
 }
@@ -6456,7 +6821,7 @@ private fun DummyBannerAd(modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.Center
         ) {
             Text(
-                text = "AdMob バナー広告（ダミー）",
+                text = LocalContext.current.getString(R.string.support_ad_banner_dummy),
                 color = Color(0xFF6F7F66),
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold
