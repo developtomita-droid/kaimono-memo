@@ -82,6 +82,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -5967,81 +5968,85 @@ private fun MemoMoveEditScreen(
             .onGloballyPositioned { rootBounds = it.boundsInWindow() }
     ) {
         Column(Modifier.fillMaxSize()) {
-            Header("編集")
+            CompactHeader("編集")
             if (memos.isEmpty()) {
                 PlaceholderBody("移動できるカードがありません")
             } else {
                 EditInstructionPanel()
-                Row(
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
-                    EditMemoPane(
-                        label = "現在のカード",
-                        labelColor = Color(0xFF43A047),
-                        headerColor = Color(0xFFE8F5E9),
-                        side = EditPaneSide.Left,
-                        memo = leftMemo,
-                        dropActive = leftDropActive,
-                        draggingEntryId = draggingEntry?.entry?.id,
-                        onHeaderClick = { selectingSide = EditPaneSide.Left },
-                        onPanePositioned = { leftPaneBounds = it },
-                        onEntryDragStart = { memo, entry, start, bounds ->
-                            draggingEntry = EditDraggingEntry(EditPaneSide.Left, memo, entry)
-                            draggingBounds = bounds
-                            dragOffset = Offset.Zero
-                            dragPoint = Offset(bounds.left + start.x, bounds.top + start.y)
-                        },
-                        onEntryDrag = { amount ->
-                            dragOffset += amount
-                            dragPoint += amount
-                        },
-                        onEntryDragEnd = ::finishDrag,
-                        onEntryDragCancel = {
-                            draggingEntry = null
-                            draggingBounds = null
-                            dragOffset = Offset.Zero
-                        },
-                        modifier = Modifier.weight(1f)
-                    )
                     EditCenterSwapControl(
                         onClick = ::swapSelectedMemos,
                         modifier = Modifier
-                            .width(44.dp)
-                            .fillMaxHeight()
-                            .padding(horizontal = 5.dp)
+                            .align(Alignment.TopCenter)
+                            .zIndex(3f)
                     )
-                    EditMemoPane(
-                        label = "切り替え後のカード",
-                        labelColor = Color(0xFF7E57C2),
-                        headerColor = Color(0xFFF1E3FF),
-                        side = EditPaneSide.Right,
-                        memo = rightMemo,
-                        dropActive = rightDropActive,
-                        draggingEntryId = draggingEntry?.entry?.id,
-                        onHeaderClick = { selectingSide = EditPaneSide.Right },
-                        onPanePositioned = { rightPaneBounds = it },
-                        onEntryDragStart = { memo, entry, start, bounds ->
-                            draggingEntry = EditDraggingEntry(EditPaneSide.Right, memo, entry)
-                            draggingBounds = bounds
-                            dragOffset = Offset.Zero
-                            dragPoint = Offset(bounds.left + start.x, bounds.top + start.y)
-                        },
-                        onEntryDrag = { amount ->
-                            dragOffset += amount
-                            dragPoint += amount
-                        },
-                        onEntryDragEnd = ::finishDrag,
-                        onEntryDragCancel = {
-                            draggingEntry = null
-                            draggingBounds = null
-                            dragOffset = Offset.Zero
-                        },
-                        modifier = Modifier.weight(1f)
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        EditMemoPane(
+                            label = "現在のカード",
+                            labelColor = Color(0xFF43A047),
+                            headerColor = Color(0xFFE8F5E9),
+                            side = EditPaneSide.Left,
+                            memo = leftMemo,
+                            dropActive = leftDropActive,
+                            draggingEntryId = draggingEntry?.entry?.id,
+                            onHeaderClick = { selectingSide = EditPaneSide.Left },
+                            onPanePositioned = { leftPaneBounds = it },
+                            onEntryDragStart = { memo, entry, start, bounds ->
+                                draggingEntry = EditDraggingEntry(EditPaneSide.Left, memo, entry)
+                                draggingBounds = bounds
+                                dragOffset = Offset.Zero
+                                dragPoint = Offset(bounds.left + start.x, bounds.top + start.y)
+                            },
+                            onEntryDrag = { amount ->
+                                dragOffset += amount
+                                dragPoint += amount
+                            },
+                            onEntryDragEnd = ::finishDrag,
+                            onEntryDragCancel = {
+                                draggingEntry = null
+                                draggingBounds = null
+                                dragOffset = Offset.Zero
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        EditMemoPane(
+                            label = "切り替え後のカード",
+                            labelColor = Color(0xFF7E57C2),
+                            headerColor = Color(0xFFF1E3FF),
+                            side = EditPaneSide.Right,
+                            memo = rightMemo,
+                            dropActive = rightDropActive,
+                            draggingEntryId = draggingEntry?.entry?.id,
+                            onHeaderClick = { selectingSide = EditPaneSide.Right },
+                            onPanePositioned = { rightPaneBounds = it },
+                            onEntryDragStart = { memo, entry, start, bounds ->
+                                draggingEntry = EditDraggingEntry(EditPaneSide.Right, memo, entry)
+                                draggingBounds = bounds
+                                dragOffset = Offset.Zero
+                                dragPoint = Offset(bounds.left + start.x, bounds.top + start.y)
+                            },
+                            onEntryDrag = { amount ->
+                                dragOffset += amount
+                                dragPoint += amount
+                            },
+                            onEntryDragEnd = ::finishDrag,
+                            onEntryDragCancel = {
+                                draggingEntry = null
+                                draggingBounds = null
+                                dragOffset = Offset.Zero
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
         }
@@ -6080,29 +6085,29 @@ private fun EditInstructionPanel() {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         shape = RoundedCornerShape(12.dp),
         color = Color(0xFFFFF8E1),
         border = BorderStroke(1.dp, Color(0xFFFFECB3))
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("💡", fontSize = 26.sp)
+            Text("💡", fontSize = 24.sp)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    "カードを左右に並べて、アイテムを移動できます",
+                    "アイテムを移動できます。",
                     color = Color(0xFF3E2D22),
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    "タイトル部分をタップするとカードを切り替え、行を長押しして反対側へドラッグします。",
+                    "カードのタイトルをタップすると、カードを切り替えることができます。",
                     color = Color(0xFF5D4037),
                     fontSize = 12.sp,
-                    lineHeight = 16.sp
+                    lineHeight = 15.sp
                 )
             }
         }
@@ -6204,34 +6209,63 @@ private fun EditMemoHeader(
 ) {
     val doneCount = memo.entries.count { it.checked && it.name.isNotBlank() }
     val totalCount = memo.entries.count { it.name.isNotBlank() }
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(color)
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                memo.title.ifBlank { "タイトル未入力" },
-                color = accent,
-                fontSize = 17.sp,
-                lineHeight = 20.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(70.dp)
+        ) {
+            ShoppingPatternImage(
+                pattern = memo.imagePattern,
+                modifier = Modifier.matchParentSize()
             )
-            Text(
-                "$doneCount/$totalCount 件 完了",
-                color = accent,
-                fontSize = 12.sp,
-                lineHeight = 14.sp,
-                fontWeight = FontWeight.Bold
-            )
+            Box(
+                modifier = Modifier
+                    .padding(5.dp)
+                    .size(42.dp)
+                    .background(Color.White.copy(alpha = 0.86f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    if (memo.favorite) "★" else "☆",
+                    color = if (memo.favorite) Color(0xFFFFA000) else Color(0xFF666666),
+                    fontSize = 28.sp,
+                    lineHeight = 28.sp
+                )
+            }
         }
-        Text("↔", color = accent, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(color)
+                .padding(horizontal = 8.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    memo.title.ifBlank { "タイトル未入力" },
+                    color = accent,
+                    fontSize = 18.sp,
+                    lineHeight = 21.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    "$doneCount/$totalCount 件 完了",
+                    color = accent,
+                    fontSize = 13.sp,
+                    lineHeight = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Text("↔", color = accent, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        }
     }
 }
 
@@ -6326,13 +6360,13 @@ private fun EditCenterSwapControl(
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Surface(
             modifier = Modifier
-                .size(38.dp)
+                .size(42.dp)
                 .clickable(onClick = onClick),
             shape = CircleShape,
             color = Color(0xFF7CB342)
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Text("↔", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Text("↔", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -6348,8 +6382,15 @@ private fun MemoSelectDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = Color.White,
+        titleContentColor = Color.Black,
+        textContentColor = Color.Black,
         title = {
-            Text(if (side == EditPaneSide.Left) "左のカードを選択" else "右のカードを選択", fontWeight = FontWeight.Bold)
+            Text(
+                if (side == EditPaneSide.Left) "左のカードを選択" else "右のカードを選択",
+                color = Color.Black,
+                fontWeight = FontWeight.Bold
+            )
         },
         text = {
             LazyColumn(Modifier.heightIn(max = 380.dp)) {
@@ -6364,17 +6405,28 @@ private fun MemoSelectDialog(
                             .padding(vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        RadioButton(selected = selected, onClick = { onSelect(memo) })
+                        RadioButton(
+                            selected = selected,
+                            onClick = { onSelect(memo) },
+                            colors = RadioButtonDefaults.colors(
+                                selectedColor = Color(0xFFD32F2F),
+                                unselectedColor = Color(0xFF666666)
+                            )
+                        )
                         Column(Modifier.weight(1f)) {
                             Text(
                                 memo.title.ifBlank { "タイトル未入力" },
-                                color = if (selected) Color(0xFF1976D2) else Color.Black,
+                                color = if (selected) Color(0xFFD32F2F) else Color.Black,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            Text("$doneCount/$totalCount 件 完了", color = Color(0xFF666666), fontSize = 12.sp)
+                            Text(
+                                "$doneCount/$totalCount 件 完了",
+                                color = if (selected) Color(0xFFD32F2F) else Color(0xFF666666),
+                                fontSize = 12.sp
+                            )
                         }
                     }
                 }
@@ -6382,7 +6434,7 @@ private fun MemoSelectDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("閉じる")
+                Text("閉じる", color = Color(0xFF1976D2))
             }
         }
     )
@@ -7243,6 +7295,38 @@ private fun PlaceholderScreen(title: String, body: String) {
 private fun PlaceholderBody(text: String) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         Text(text, color = Color(0xFF888888), modifier = Modifier.padding(top = 48.dp))
+    }
+}
+
+@Composable
+private fun CompactHeader(
+    title: String,
+    trailing: @Composable (() -> Unit)? = null
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .background(Color.White)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = title,
+                color = Color(0xFF1976D2),
+                fontSize = 24.sp,
+                lineHeight = 28.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            trailing?.invoke()
+        }
+        Divider(color = Color(0xFFE0E0E0))
     }
 }
 
