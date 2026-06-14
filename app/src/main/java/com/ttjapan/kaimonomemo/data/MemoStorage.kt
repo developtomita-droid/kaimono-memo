@@ -17,6 +17,10 @@ private const val PREF_MIC_STOP_TIMEOUT_MINUTES = "mic_stop_timeout_minutes"
 private const val PREF_MIC_DISABLED = "mic_disabled"
 private const val PREF_MIC_OPERATION_ENABLED = "mic_operation_enabled"
 private const val PREF_MIC_COMMAND_PREFIX = "mic_command_"
+private const val PREF_HOME_TITLE_PATTERN = "home_title_pattern"
+private const val PREF_TEMPORARY_TITLE_PATTERN = "temporary_title_pattern"
+private const val PREF_SUPPORT_AD_WATCH_DATE = "support_ad_watch_date"
+private const val TITLE_PATTERN_COUNT = 15
 
 data class MicrophoneSettings(
     val disabled: Boolean = false,
@@ -30,6 +34,7 @@ fun defaultMicrophoneCommands(): Map<String, String> {
     return linkedMapOf(
         "home" to "ホーム",
         "showTrash" to "ゴミ箱",
+        "showItems" to "アイテム",
         "scrollUp" to "上スク",
         "scrollDown" to "下スク",
         "stop" to "ストップ",
@@ -164,6 +169,45 @@ fun saveMicrophoneSettings(context: Context, settings: MicrophoneSettings) {
         editor.putString(PREF_MIC_COMMAND_PREFIX + key, settings.commands[key].orEmpty())
     }
     editor.apply()
+}
+
+fun loadHomeTitlePattern(context: Context): Int {
+    return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .getInt(PREF_HOME_TITLE_PATTERN, 0)
+        .coerceIn(0, TITLE_PATTERN_COUNT - 1)
+}
+
+fun saveHomeTitlePattern(context: Context, pattern: Int) {
+    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putInt(PREF_HOME_TITLE_PATTERN, pattern.coerceIn(0, TITLE_PATTERN_COUNT - 1))
+        .apply()
+}
+
+fun loadTemporaryTitlePattern(context: Context): Int {
+    return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .getInt(PREF_TEMPORARY_TITLE_PATTERN, 0)
+        .coerceIn(0, TITLE_PATTERN_COUNT - 1)
+}
+
+fun saveTemporaryTitlePattern(context: Context, pattern: Int) {
+    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putInt(PREF_TEMPORARY_TITLE_PATTERN, pattern.coerceIn(0, TITLE_PATTERN_COUNT - 1))
+        .apply()
+}
+
+fun loadSupportAdWatchDate(context: Context): String {
+    return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .getString(PREF_SUPPORT_AD_WATCH_DATE, "")
+        .orEmpty()
+}
+
+fun saveSupportAdWatchDate(context: Context, date: String) {
+    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(PREF_SUPPORT_AD_WATCH_DATE, date)
+        .apply()
 }
 
 fun assignDefaultTitleIfBlank(memo: ShoppingMemo, memos: List<ShoppingMemo>) {

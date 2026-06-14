@@ -27,6 +27,8 @@ import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -44,6 +46,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -100,6 +103,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -114,6 +118,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
@@ -122,9 +127,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
@@ -136,32 +144,125 @@ import com.ttjapan.kaimonomemo.data.loadMicrophoneSettings
 import com.ttjapan.kaimonomemo.data.loadMemos
 import com.ttjapan.kaimonomemo.data.loadOneHandModeEnabled
 import com.ttjapan.kaimonomemo.data.loadSimpleModeEnabled
+import com.ttjapan.kaimonomemo.data.loadHomeTitlePattern
+import com.ttjapan.kaimonomemo.data.loadSupportAdWatchDate
+import com.ttjapan.kaimonomemo.data.loadTemporaryTitlePattern
 import com.ttjapan.kaimonomemo.data.saveLeftHandModeEnabled
 import com.ttjapan.kaimonomemo.data.saveMicrophoneSettings
 import com.ttjapan.kaimonomemo.data.saveMemos
 import com.ttjapan.kaimonomemo.data.saveOneHandModeEnabled
 import com.ttjapan.kaimonomemo.data.saveSimpleModeEnabled
+import com.ttjapan.kaimonomemo.data.saveHomeTitlePattern
+import com.ttjapan.kaimonomemo.data.saveSupportAdWatchDate
+import com.ttjapan.kaimonomemo.data.saveTemporaryTitlePattern
 import com.ttjapan.kaimonomemo.model.ShoppingEntry
 import com.ttjapan.kaimonomemo.model.ShoppingMemo
 import com.ttjapan.kaimonomemo.voice.ContinuousSpeechController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private enum class Screen {
+    Ads,
     Home,
     Detail,
     PatternPicker,
-    Map,
+    TitlePatternPicker,
+    Edit,
     Settings,
     MicrophoneSettings,
     Favorites
 }
 
+private enum class TitlePatternTarget {
+    Home,
+    Temporary
+}
+
+private const val TemporaryTitlePatternPreviewText = "一時的ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
 private enum class VoiceTarget {
     Title,
     Item
+}
+
+private enum class EditPaneSide {
+    Left,
+    Right
+}
+
+private data class EditDraggingEntry(
+    val side: EditPaneSide,
+    val memo: ShoppingMemo,
+    val entry: ShoppingEntry
+)
+
+private fun matchesVoiceCommand(spoken: String, command: String): Boolean {
+    fun normalize(value: String): String = value.replace(Regex("\\s+"), "").lowercase(Locale.ROOT)
+    val normalizedCommand = normalize(command)
+    return normalizedCommand.isNotBlank() && normalize(spoken) == normalizedCommand
+}
+
+private fun microphoneCommand(settings: MicrophoneSettings, key: String, fallback: String): String {
+    return settings.commands[key]?.takeIf { it.isNotBlank() } ?: fallback
+}
+
+private fun matchesMicrophoneCommand(
+    spoken: String,
+    settings: MicrophoneSettings,
+    key: String,
+    fallback: String
+): Boolean {
+    return settings.operationEnabled && matchesVoiceCommand(spoken, microphoneCommand(settings, key, fallback))
+}
+
+private fun normalizeVoiceToken(value: String): String {
+    return value.replace(Regex("\\s+"), "")
+}
+
+private fun parseVoiceNumberToken(token: String): Int? {
+    val normalizedDigits = token.map { char ->
+        if (char in '０'..'９') ('0'.code + (char.code - '０'.code)).toChar() else char
+    }.joinToString("")
+    normalizedDigits.toIntOrNull()?.let { return it }
+    val values = mapOf(
+        '一' to 1,
+        '二' to 2,
+        '三' to 3,
+        '四' to 4,
+        '五' to 5,
+        '六' to 6,
+        '七' to 7,
+        '八' to 8,
+        '九' to 9
+    )
+    var total = 0
+    var current = 0
+    normalizedDigits.forEach { char ->
+        when (char) {
+            '百' -> {
+                total += (if (current == 0) 1 else current) * 100
+                current = 0
+            }
+            '十' -> {
+                total += (if (current == 0) 1 else current) * 10
+                current = 0
+            }
+            else -> current = values[char] ?: return null
+        }
+    }
+    val parsed = total + current
+    return parsed.takeIf { it > 0 }
+}
+
+private fun extractVoiceItemNumber(spoken: String): Int? {
+    val normalized = normalizeVoiceToken(spoken)
+    val match = Regex("([0-9０-９一二三四五六七八九十百]+)番").find(normalized) ?: return null
+    return parseVoiceNumberToken(match.groupValues[1])
 }
 
 private enum class ScrollAnchor {
@@ -178,6 +279,8 @@ private const val ListTopAnchorKey = "list-top-anchor"
 private const val AddListItemKey = "add-list-item"
 private const val DetailBackSwipeThresholdPx = 140f
 private const val DragAutoReorderDelayMillis = 100L
+private const val VoiceScrollStepPx = 90f
+private const val VoiceScrollDelayMillis = 45L
 private const val OneHandMaxOffsetRatio = 0.46f
 private const val OneHandScrollSpeedMultiplier = 1.5f
 private const val TemporaryMemoId = "temporary-shopping-memo"
@@ -287,11 +390,16 @@ fun ShoppingMemoApp() {
     var currentScreen by remember { mutableStateOf(Screen.Home) }
     var selectedMemoId by remember { mutableStateOf<String?>(null) }
     var imageEditingMemoId by remember { mutableStateOf<String?>(null) }
+    var titlePatternTarget by remember { mutableStateOf<TitlePatternTarget?>(null) }
+    var titlePatternReturnScreen by remember { mutableStateOf(Screen.Home) }
+    var homeTitlePattern by remember { mutableStateOf(loadHomeTitlePattern(context)) }
+    var temporaryTitlePattern by remember { mutableStateOf(loadTemporaryTitlePattern(context)) }
     var oneHandModeEnabled by remember { mutableStateOf(loadOneHandModeEnabled(context)) }
     var simpleModeEnabled by remember { mutableStateOf(initialSimpleModeEnabled) }
     var leftHandModeEnabled by remember { mutableStateOf(loadLeftHandModeEnabled(context)) }
     var microphoneSettings by remember { mutableStateOf(loadMicrophoneSettings(context)) }
     var homeTopScrollRequest by remember { mutableStateOf(0) }
+    var supportAdVideoVisible by remember { mutableStateOf(false) }
     val recentlyMovedEntryIds = remember { mutableStateListOf<String>() }
     val selectedMemo = memos.firstOrNull { it.id == selectedMemoId }
     val imageEditingMemo = memos.firstOrNull { it.id == imageEditingMemoId }
@@ -334,6 +442,29 @@ fun ShoppingMemoApp() {
     fun updateMicrophoneSettings(settings: MicrophoneSettings) {
         microphoneSettings = settings
         saveMicrophoneSettings(context, settings)
+    }
+    fun openTitlePatternPicker(target: TitlePatternTarget) {
+        titlePatternTarget = target
+        titlePatternReturnScreen = currentScreen
+        currentScreen = Screen.TitlePatternPicker
+    }
+    fun closeTitlePatternPicker() {
+        currentScreen = titlePatternReturnScreen
+        titlePatternTarget = null
+    }
+    fun updateTitlePattern(pattern: Int) {
+        when (titlePatternTarget) {
+            TitlePatternTarget.Home -> {
+                homeTitlePattern = pattern
+                saveHomeTitlePattern(context, pattern)
+            }
+            TitlePatternTarget.Temporary -> {
+                temporaryTitlePattern = pattern
+                saveTemporaryTitlePattern(context, pattern)
+            }
+            null -> Unit
+        }
+        closeTitlePatternPicker()
     }
     fun openMemo(memo: ShoppingMemo) {
         selectedMemoId = memo.id
@@ -382,6 +513,9 @@ fun ShoppingMemoApp() {
     BackHandler(enabled = currentScreen == Screen.PatternPicker) {
         currentScreen = Screen.Home
     }
+    BackHandler(enabled = currentScreen == Screen.TitlePatternPicker) {
+        closeTitlePatternPicker()
+    }
     BackHandler(enabled = currentScreen == Screen.MicrophoneSettings) {
         currentScreen = Screen.Settings
     }
@@ -389,16 +523,22 @@ fun ShoppingMemoApp() {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         bottomBar = {
-            BottomIconBar(
-                screen = if (currentScreen == Screen.MicrophoneSettings) Screen.Settings else currentScreen,
-                onHome = {
-                    if (currentScreen == Screen.Detail) finishDetail() else currentScreen = Screen.Home
-                },
-                onMap = { currentScreen = Screen.Map },
-                onSettings = { currentScreen = Screen.Settings },
-                onFavorite = { currentScreen = Screen.Favorites },
-                onOwner = {}
-            )
+            if (!supportAdVideoVisible) {
+                BottomIconBar(
+                    screen = when (currentScreen) {
+                        Screen.MicrophoneSettings -> Screen.Settings
+                        Screen.TitlePatternPicker -> titlePatternReturnScreen
+                        else -> currentScreen
+                    },
+                    onHome = {
+                        if (currentScreen == Screen.Detail) finishDetail() else currentScreen = Screen.Home
+                    },
+                    onEdit = { currentScreen = Screen.Edit },
+                    onSettings = { currentScreen = Screen.Settings },
+                    onFavorite = { currentScreen = Screen.Favorites },
+                    onAds = { currentScreen = Screen.Ads }
+                )
+            }
         }
     ) { innerPadding ->
         Surface(
@@ -414,6 +554,9 @@ fun ShoppingMemoApp() {
                             memo = temporaryMemo,
                             oneHandModeEnabled = oneHandModeEnabled,
                             microphoneEnabled = !microphoneSettings.disabled,
+                            microphoneSettings = microphoneSettings,
+                            titlePattern = temporaryTitlePattern,
+                            onTitlePatternClick = { openTitlePatternPicker(TitlePatternTarget.Temporary) },
                             recentlyMovedEntryIds = emptySet(),
                             onFinish = ::finishTemporaryHome,
                             onChanged = ::persist
@@ -425,7 +568,10 @@ fun ShoppingMemoApp() {
                             temporaryMemo = temporaryMemo,
                             oneHandModeEnabled = oneHandModeEnabled,
                             microphoneEnabled = !microphoneSettings.disabled,
+                            microphoneSettings = microphoneSettings,
                             homeTopScrollRequest = homeTopScrollRequest,
+                            titlePattern = homeTitlePattern,
+                            onTitlePatternClick = { openTitlePatternPicker(TitlePatternTarget.Home) },
                             onAddMemo = ::addMemo,
                             onOpenMemo = ::openMemo,
                             onOpenTemporaryMemo = { openMemo(temporaryMemo) },
@@ -468,13 +614,26 @@ fun ShoppingMemoApp() {
                             memo = selectedMemo,
                             oneHandModeEnabled = oneHandModeEnabled,
                             microphoneEnabled = !microphoneSettings.disabled,
+                            microphoneSettings = microphoneSettings,
+                            titlePattern = if (isTemporaryMemo(selectedMemo)) temporaryTitlePattern else null,
+                            onTitlePatternClick = if (isTemporaryMemo(selectedMemo)) {
+                                { openTitlePatternPicker(TitlePatternTarget.Temporary) }
+                            } else {
+                                null
+                            },
                             recentlyMovedEntryIds = recentlyMovedEntryIds.toSet(),
                             onFinish = ::finishDetail,
                             onChanged = ::persist
                         )
                     }
                 }
-                Screen.Map -> PlaceholderScreen("地図", "地図機能はありません")
+                Screen.Ads -> AdsSupportScreen(
+                    onVideoOverlayVisibleChange = { supportAdVideoVisible = it }
+                )
+                Screen.Edit -> MemoMoveEditScreen(
+                    memos = listOf(temporaryMemo) + activeMemos,
+                    onChanged = ::persist
+                )
                 Screen.PatternPicker -> {
                     if (imageEditingMemo == null) {
                         currentScreen = Screen.Home
@@ -490,6 +649,18 @@ fun ShoppingMemoApp() {
                             }
                         )
                     }
+                }
+                Screen.TitlePatternPicker -> {
+                    val selectedPattern = when (titlePatternTarget) {
+                        TitlePatternTarget.Home -> homeTitlePattern
+                        TitlePatternTarget.Temporary -> temporaryTitlePattern
+                        null -> 0
+                    }
+                    TitlePatternPickerScreen(
+                        selectedPattern = selectedPattern,
+                        oneHandModeEnabled = oneHandModeEnabled,
+                        onSelect = ::updateTitlePattern
+                    )
                 }
                 Screen.Settings -> SettingsScreen(
                     memoCount = activeMemos.size,
@@ -529,7 +700,10 @@ private fun AdvancedHomeScreen(
     temporaryMemo: ShoppingMemo,
     oneHandModeEnabled: Boolean,
     microphoneEnabled: Boolean,
+    microphoneSettings: MicrophoneSettings,
     homeTopScrollRequest: Int,
+    titlePattern: Int,
+    onTitlePatternClick: () -> Unit,
     onAddMemo: () -> Unit,
     onOpenMemo: (ShoppingMemo) -> Unit,
     onOpenTemporaryMemo: () -> Unit,
@@ -542,6 +716,8 @@ private fun AdvancedHomeScreen(
     onCardImageChanged: () -> Unit,
     onToggleFavorite: (ShoppingMemo) -> Unit
 ) {
+    val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val tabs = listOf("アイテム", "ゴミ箱")
@@ -567,6 +743,9 @@ private fun AdvancedHomeScreen(
     var homeHeightPx by remember { mutableStateOf(0) }
     var oneHandOffsetPx by remember { mutableStateOf(0f) }
     var oneHandFlingGeneration by remember { mutableStateOf(0) }
+    var controlScrollReachedTopInGesture by remember { mutableStateOf(false) }
+    var homeVoiceScrollDirection by remember { mutableStateOf(0) }
+    var homeVoiceScrollSerial by remember { mutableStateOf(0) }
     val oneHandMaxOffsetPx = (homeHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
     val oneHandBackdropHeight = with(density) { oneHandOffsetPx.toDp() }
     val oneHandOffsetDp = with(density) { oneHandOffsetPx.toDp() }
@@ -587,6 +766,75 @@ private fun AdvancedHomeScreen(
         if (ordered.size == memos.size) ordered else memos
     }
 
+    fun stopHomeVoiceScroll() {
+        homeVoiceScrollDirection = 0
+        homeVoiceScrollSerial++
+    }
+
+    fun startHomeVoiceScroll(direction: Int) {
+        homeVoiceScrollDirection = direction
+        homeVoiceScrollSerial++
+    }
+
+    fun handleHomeVoiceText(text: String) {
+        val cleaned = text.trim()
+        if (cleaned.isBlank() || !microphoneSettings.operationEnabled) return
+
+        when {
+            matchesMicrophoneCommand(cleaned, microphoneSettings, "home", "ホーム") -> {
+                stopHomeVoiceScroll()
+                scope.launch { pagerState.animateScrollToPage(0) }
+                return
+            }
+            matchesMicrophoneCommand(cleaned, microphoneSettings, "showTrash", "ゴミ箱") -> {
+                stopHomeVoiceScroll()
+                scope.launch { pagerState.animateScrollToPage(1) }
+                return
+            }
+            matchesMicrophoneCommand(cleaned, microphoneSettings, "showItems", "アイテム") -> {
+                stopHomeVoiceScroll()
+                scope.launch { pagerState.animateScrollToPage(0) }
+                return
+            }
+            matchesMicrophoneCommand(cleaned, microphoneSettings, "scrollUp", "上スク") -> {
+                startHomeVoiceScroll(-1)
+                return
+            }
+            matchesMicrophoneCommand(cleaned, microphoneSettings, "scrollDown", "下スク") -> {
+                startHomeVoiceScroll(1)
+                return
+            }
+            matchesMicrophoneCommand(cleaned, microphoneSettings, "stop", "ストップ") -> {
+                stopHomeVoiceScroll()
+                return
+            }
+        }
+
+        val targetMemo = (memos + temporaryMemo).firstOrNull { memo ->
+            memo.title.isNotBlank() && matchesVoiceCommand(cleaned, memo.title)
+        } ?: return
+        stopHomeVoiceScroll()
+        if (isTemporaryMemo(targetMemo)) {
+            onOpenTemporaryMemo()
+        } else {
+            onOpenMemo(targetMemo)
+        }
+    }
+
+    val latestHomeVoiceHandler by rememberUpdatedState(::handleHomeVoiceText)
+    val homeSpeechController = remember {
+        ContinuousSpeechController(context) { latestHomeVoiceHandler(it) }
+    }
+    DisposableEffect(homeSpeechController) {
+        onDispose { homeSpeechController.destroy() }
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            keyboardController?.hide()
+            homeSpeechController.start()
+        }
+    }
+
     LaunchedEffect(sourceMemoIds, draggingId) {
         if (draggingId == null) {
             homeMemoOrderIds.clear()
@@ -603,6 +851,32 @@ private fun AdvancedHomeScreen(
         if (homeTopScrollRequest > 0) {
             activeGridState.scrollToItem(0, 0)
             oneHandOffsetPx = 0f
+        }
+    }
+
+    LaunchedEffect(microphoneEnabled) {
+        if (!microphoneEnabled) {
+            homeSpeechController.stop()
+            stopHomeVoiceScroll()
+        }
+    }
+
+    LaunchedEffect(homeVoiceScrollSerial, homeVoiceScrollDirection) {
+        val direction = homeVoiceScrollDirection
+        if (direction == 0) return@LaunchedEffect
+        while (homeVoiceScrollDirection == direction) {
+            val targetState = if (pagerState.currentPage == 0) activeGridState else trashGridState
+            val canScroll = if (direction < 0) targetState.canScrollBackward else targetState.canScrollForward
+            if (!canScroll) {
+                stopHomeVoiceScroll()
+                break
+            }
+            val consumed = targetState.scrollBy(direction * VoiceScrollStepPx)
+            if (kotlin.math.abs(consumed) < 0.5f) {
+                stopHomeVoiceScroll()
+                break
+            }
+            delay(VoiceScrollDelayMillis)
         }
     }
 
@@ -717,6 +991,9 @@ private fun AdvancedHomeScreen(
         if (delta < 0f && oneHandOffsetPx > 0f) {
             return applyOneHandControlScroll(delta)
         }
+        if (delta > 0f && controlScrollReachedTopInGesture) {
+            return delta
+        }
 
         val gridAtTopBefore = activeGridState.firstVisibleItemIndex == 0 &&
             activeGridState.firstVisibleItemScrollOffset == 0
@@ -724,6 +1001,10 @@ private fun AdvancedHomeScreen(
         val remaining = delta - gridConsumed
         val gridAtTopAfter = activeGridState.firstVisibleItemIndex == 0 &&
             activeGridState.firstVisibleItemScrollOffset == 0
+        if (delta > 0f && !gridAtTopBefore && gridAtTopAfter) {
+            controlScrollReachedTopInGesture = true
+            return if (remaining > 0f) delta else gridConsumed
+        }
         if (remaining > 0f && gridAtTopBefore && gridAtTopAfter) {
             return gridConsumed + applyOneHandControlScroll(remaining)
         }
@@ -831,7 +1112,11 @@ private fun AdvancedHomeScreen(
                     }
                 }
         ) {
-            Header(title = "買い物メモ")
+            TitlePatternHeader(
+                title = "買い物メモ",
+                pattern = titlePattern,
+                onClick = onTitlePatternClick
+            )
             HomeTabRow(
                 tabs = tabs,
                 selectedPage = pagerState.currentPage,
@@ -886,6 +1171,7 @@ private fun AdvancedHomeScreen(
                         onOpenTemporaryMemo = onOpenTemporaryMemo,
                         onTemporaryListPositioned = { temporaryListBounds = it },
                         onControlPositioned = { homeControlBounds = it },
+                        onControlScrollGestureStart = { controlScrollReachedTopInGesture = false },
                         onControlScroll = { delta -> scrollHomeControls(delta) },
                         onTemporaryDragStart = { entry, start, bounds ->
                             draggingTemporaryEntry = entry
@@ -916,11 +1202,27 @@ private fun AdvancedHomeScreen(
         }
 
         if (microphoneEnabled) {
-            HomeMicrophoneButton(
+            MicFab(
+                controller = homeSpeechController,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 12.dp)
-                    .zIndex(40f)
+                    .zIndex(40f),
+                onClick = {
+                    if (homeSpeechController.partialText.isNotBlank()) {
+                        homeSpeechController.commitPartial()
+                        return@MicFab
+                    }
+                    if (homeSpeechController.isRunning) {
+                        homeSpeechController.stop()
+                        stopHomeVoiceScroll()
+                    } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        keyboardController?.hide()
+                        homeSpeechController.start()
+                    } else {
+                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
             )
         }
 
@@ -1060,6 +1362,7 @@ private fun HomeItemsPage(
     onTemporaryDragCancel: () -> Unit,
     onTemporaryListPositioned: (Rect) -> Unit,
     onControlPositioned: (Rect) -> Unit,
+    onControlScrollGestureStart: () -> Unit,
     onControlScroll: (Float) -> Float
 ) {
     val controlHeight = 190.dp
@@ -1252,6 +1555,7 @@ private fun HomeItemsPage(
                 .zIndex(25f),
             onAddMemo = onAddMemo,
             onPositioned = onControlPositioned,
+            onScrollGestureStart = onControlScrollGestureStart,
             onScroll = onControlScroll
         )
     }
@@ -1731,16 +2035,19 @@ private fun TemporaryMemoPanel(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(112.dp)
-                    .background(Color(0xFFFFEBEE)),
+                    .heightIn(min = 46.dp)
+                    .background(Color(0xFFFFEBEE))
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = "一時的",
                     color = Color(0xFFD32F2F),
-                    fontSize = 26.sp,
-                    lineHeight = 28.sp,
-                    fontWeight = FontWeight.Bold
+                    fontSize = 20.sp,
+                    lineHeight = 23.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             Column(
@@ -1834,6 +2141,7 @@ private fun HomeLeftBottomControls(
     modifier: Modifier = Modifier,
     onAddMemo: () -> Unit,
     onPositioned: (Rect) -> Unit,
+    onScrollGestureStart: () -> Unit,
     onScroll: (Float) -> Float
 ) {
     Box(
@@ -1844,6 +2152,7 @@ private fun HomeLeftBottomControls(
     ) {
         HomeAddScrollButton(
             onScroll = onScroll,
+            onScrollGestureStart = onScrollGestureStart,
             onClick = onAddMemo,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -1857,6 +2166,7 @@ private fun HomeLeftBottomControls(
 private fun HomeAddScrollButton(
     modifier: Modifier = Modifier,
     onScroll: (Float) -> Float,
+    onScrollGestureStart: () -> Unit,
     onClick: () -> Unit
 ) {
     val scrollState = rememberScrollableState { delta ->
@@ -1864,6 +2174,15 @@ private fun HomeAddScrollButton(
     }
     Card(
         modifier = modifier
+            .pointerInput(onScrollGestureStart) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    onScrollGestureStart()
+                    do {
+                        val event = awaitPointerEvent(PointerEventPass.Final)
+                    } while (event.changes.any { it.pressed })
+                }
+            }
             .scrollable(
                 state = scrollState,
                 orientation = Orientation.Vertical
@@ -2170,6 +2489,7 @@ private enum class ShoppingVisualKind {
     Sports,
     Service,
     HundredYenShop,
+    DiscountShop,
     DailyGoods
 }
 
@@ -2181,25 +2501,62 @@ private data class ShoppingVisualPattern(
 )
 
 private fun activeShoppingVisualPatterns(): List<ShoppingVisualPattern> {
-    return listOf(
-        ShoppingVisualPattern("食料品", ShoppingVisualKind.Food, Color(0xFFE8F5E9), Color(0xFF2E7D32)),
-        ShoppingVisualPattern("カート", ShoppingVisualKind.Cart, Color(0xFFFFEBEE), Color(0xFFD32F2F)),
-        ShoppingVisualPattern("家電", ShoppingVisualKind.Appliance, Color(0xFFE3F2FD), Color(0xFF1565C0)),
-        ShoppingVisualPattern("ゲーム", ShoppingVisualKind.Game, Color(0xFFEDE7F6), Color(0xFF512DA8)),
-        ShoppingVisualPattern("レストラン", ShoppingVisualKind.Restaurant, Color(0xFFFFF8E1), Color(0xFFF57F17)),
-        ShoppingVisualPattern("衣類", ShoppingVisualKind.Clothing, Color(0xFFFCE4EC), Color(0xFFC2185B)),
-        ShoppingVisualPattern("スポーツ用品", ShoppingVisualKind.Sports, Color(0xFFE0F2F1), Color(0xFF00796B)),
-        ShoppingVisualPattern("サービス業", ShoppingVisualKind.Service, Color(0xFFFFFDE7), Color(0xFFF9A825)),
-        ShoppingVisualPattern("100均一", ShoppingVisualKind.HundredYenShop, Color(0xFFFFF3E0), Color(0xFFD32F2F)),
-        ShoppingVisualPattern("日用品", ShoppingVisualKind.DailyGoods, Color(0xFFE0F7FA), Color(0xFF00838F))
-    )
+    val isJapanese = Locale.getDefault().language == Locale.JAPANESE.language
+    val foodBackground = if (isJapanese) Color(0xFFFFA7B4) else Color(0xFF8FD8FF)
+    return buildList {
+        add(ShoppingVisualPattern("食料品", ShoppingVisualKind.Food, foodBackground, Color(0xFF2E7D32)))
+        add(ShoppingVisualPattern("カート", ShoppingVisualKind.Cart, Color(0xFFFFE166), Color(0xFFD32F2F)))
+        add(ShoppingVisualPattern("家電", ShoppingVisualKind.Appliance, Color(0xFFC994F5), Color(0xFF1565C0)))
+        add(ShoppingVisualPattern("ゲーム", ShoppingVisualKind.Game, Color(0xFFB7EC80), Color(0xFF512DA8)))
+        add(ShoppingVisualPattern("レストラン", ShoppingVisualKind.Restaurant, Color(0xFFFFB63E), Color(0xFFF57F17)))
+        add(ShoppingVisualPattern("衣類", ShoppingVisualKind.Clothing, Color(0xFFFF9FBC), Color(0xFFC2185B)))
+        add(ShoppingVisualPattern("スポーツ用品", ShoppingVisualKind.Sports, Color(0xFF9FDDFF), Color(0xFF00796B)))
+        add(ShoppingVisualPattern("サービス業", ShoppingVisualKind.Service, Color(0xFFFFDC54), Color(0xFFF9A825)))
+        if (isJapanese) {
+            add(ShoppingVisualPattern("100円ショップ", ShoppingVisualKind.HundredYenShop, Color(0xFFFF9FCA), Color(0xFFD32F2F)))
+        }
+        add(ShoppingVisualPattern("ディスカウントショップ", ShoppingVisualKind.DiscountShop, Color(0xFFB9EB55), Color(0xFF8BC34A)))
+        add(ShoppingVisualPattern("日用品", ShoppingVisualKind.DailyGoods, Color(0xFF52D1D1), Color(0xFF00838F)))
+    }
+}
+
+private fun shoppingPatternImageResId(kind: ShoppingVisualKind): Int {
+    val isJapanese = Locale.getDefault().language == Locale.JAPANESE.language
+    return when (kind) {
+        ShoppingVisualKind.Food -> if (isJapanese) {
+            R.drawable.pattern_food_jp
+        } else {
+            R.drawable.pattern_food_global
+        }
+        ShoppingVisualKind.Cart -> R.drawable.pattern_cart
+        ShoppingVisualKind.Appliance -> R.drawable.pattern_appliance
+        ShoppingVisualKind.Game -> R.drawable.pattern_game
+        ShoppingVisualKind.Restaurant -> R.drawable.pattern_restaurant
+        ShoppingVisualKind.Clothing -> R.drawable.pattern_fashion
+        ShoppingVisualKind.Sports -> R.drawable.pattern_sports
+        ShoppingVisualKind.Service -> R.drawable.pattern_service
+        ShoppingVisualKind.HundredYenShop -> R.drawable.pattern_100_yen_shop
+        ShoppingVisualKind.DiscountShop -> R.drawable.pattern_discount_shop
+        ShoppingVisualKind.DailyGoods -> R.drawable.pattern_daily_goods
+    }
 }
 
 @Composable
 private fun ShoppingPatternImage(pattern: Int, modifier: Modifier = Modifier) {
     val patterns = activeShoppingVisualPatterns()
     val item = patterns[((pattern % patterns.size) + patterns.size) % patterns.size]
-    ReadableShoppingPatternImage(item = item, modifier = modifier)
+    Box(
+        modifier = modifier
+            .background(item.background, RoundedCornerShape(0.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(shoppingPatternImageResId(item.kind)),
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize()
+        )
+    }
     return
     Box(
         modifier = modifier
@@ -2321,6 +2678,7 @@ private fun ShoppingPatternImage(pattern: Int, modifier: Modifier = Modifier) {
                     drawLine(Color(0xFF90CAF9), Offset(sx(0.68f), sy(0.53f)), Offset(sx(0.68f), sy(0.78f)), strokeWidth = u * 0.02f)
                     drawRoundRect(Color(0xFFBBDEFB), Offset(sx(0.34f), sy(0.54f)), Size(sx(0.32f), sy(0.25f)), CornerRadius(u * 0.02f, u * 0.02f))
                 }
+                ShoppingVisualKind.DiscountShop,
                 ShoppingVisualKind.DailyGoods -> {
                     drawRoundRect(Color(0xFF4DD0E1), Offset(sx(0.34f), sy(0.32f)), Size(sx(0.32f), sy(0.44f)), CornerRadius(u * 0.08f, u * 0.08f))
                     drawRoundRect(Color(0xFF0097A7), Offset(sx(0.42f), sy(0.22f)), Size(sx(0.16f), sy(0.10f)), CornerRadius(u * 0.025f, u * 0.025f))
@@ -2337,6 +2695,254 @@ private fun ShoppingPatternImage(pattern: Int, modifier: Modifier = Modifier) {
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp)
             )
+        }
+    }
+}
+
+private val TitlePatternImageResIds = listOf(
+    R.drawable.title_pattern_00,
+    R.drawable.title_pattern_01,
+    R.drawable.title_pattern_02,
+    R.drawable.title_pattern_03,
+    R.drawable.title_pattern_04,
+    R.drawable.title_pattern_05,
+    R.drawable.title_pattern_06,
+    R.drawable.title_pattern_07,
+    R.drawable.title_pattern_08,
+    R.drawable.title_pattern_09,
+    R.drawable.title_pattern_10,
+    R.drawable.title_pattern_11,
+    R.drawable.title_pattern_12,
+    R.drawable.title_pattern_13,
+    R.drawable.title_pattern_14
+)
+
+private fun titlePatternResId(pattern: Int): Int {
+    return TitlePatternImageResIds[pattern.coerceIn(0, TitlePatternImageResIds.lastIndex)]
+}
+
+@Composable
+private fun TitlePatternImage(
+    pattern: Int,
+    modifier: Modifier = Modifier
+) {
+    val image = ImageBitmap.imageResource(titlePatternResId(pattern))
+    Canvas(modifier = modifier) {
+        val sourceWidth = image.width
+        val sourceHeight = image.height
+        val destinationWidth = size.width.roundToInt().coerceAtLeast(1)
+        val destinationHeight = size.height.roundToInt().coerceAtLeast(1)
+        val sourceCapWidth = (sourceWidth * 0.28f)
+            .roundToInt()
+            .coerceIn(1, (sourceWidth - 2) / 2)
+        val destinationCapWidth = sourceCapWidth
+            .coerceAtMost((destinationWidth - 2).coerceAtLeast(2) / 2)
+            .coerceAtLeast(1)
+        val sourceCenterWidth = (sourceWidth - sourceCapWidth * 2).coerceAtLeast(1)
+        val destinationCenterWidth = (destinationWidth - destinationCapWidth * 2).coerceAtLeast(1)
+
+        drawImage(
+            image = image,
+            srcOffset = IntOffset(0, 0),
+            srcSize = IntSize(sourceCapWidth, sourceHeight),
+            dstOffset = IntOffset(0, 0),
+            dstSize = IntSize(destinationCapWidth, destinationHeight)
+        )
+        drawImage(
+            image = image,
+            srcOffset = IntOffset(sourceCapWidth, 0),
+            srcSize = IntSize(sourceCenterWidth, sourceHeight),
+            dstOffset = IntOffset(destinationCapWidth, 0),
+            dstSize = IntSize(destinationCenterWidth, destinationHeight)
+        )
+        drawImage(
+            image = image,
+            srcOffset = IntOffset(sourceWidth - sourceCapWidth, 0),
+            srcSize = IntSize(sourceCapWidth, sourceHeight),
+            dstOffset = IntOffset(destinationCapWidth + destinationCenterWidth, 0),
+            dstSize = IntSize(destinationCapWidth, destinationHeight)
+        )
+    }
+}
+
+@Composable
+private fun TitlePatternHeader(
+    title: String,
+    pattern: Int,
+    onClick: () -> Unit,
+    trailingContent: (@Composable BoxScope.() -> Unit)? = null
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .background(Color.White)
+            .clickable(onClick = onClick)
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 92.dp)
+        ) {
+            val bannerMaxWidth = maxWidth - 24.dp
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .widthIn(min = 300.dp, max = bannerMaxWidth)
+                    .height(84.dp)
+            ) {
+                TitlePatternImage(
+                    pattern = pattern,
+                    modifier = Modifier.matchParentSize()
+                )
+                Text(
+                    text = title,
+                    color = Color(0xFF3E2D22),
+                    fontSize = 34.sp,
+                    lineHeight = 39.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 68.dp)
+                )
+            }
+            trailingContent?.invoke(this)
+        }
+        Divider(color = Color(0xFFE0E0E0))
+    }
+}
+
+@Composable
+private fun TitlePatternPickerScreen(
+    selectedPattern: Int,
+    oneHandModeEnabled: Boolean,
+    onSelect: (Int) -> Unit
+) {
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val gridState = rememberLazyGridState()
+    var screenHeightPx by remember { mutableStateOf(0) }
+    var oneHandOffsetPx by remember { mutableStateOf(0f) }
+    var oneHandFlingGeneration by remember { mutableStateOf(0) }
+    val oneHandMaxOffsetPx = (screenHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
+    val oneHandBackdropHeight = with(density) { oneHandOffsetPx.toDp() }
+    val latestGridAtTop by rememberUpdatedState(!gridState.canScrollBackward)
+
+    LaunchedEffect(oneHandModeEnabled) {
+        if (!oneHandModeEnabled) oneHandOffsetPx = 0f
+    }
+
+    fun startOneHandFling(initialVelocityY: Float) {
+        if (oneHandMaxOffsetPx <= 0f || kotlin.math.abs(initialVelocityY) < 120f) return
+        val generation = ++oneHandFlingGeneration
+        scope.launch {
+            var velocityY = initialVelocityY.coerceIn(-3200f, 3200f)
+            var lastFrameNanos = withFrameNanos { it }
+            while (generation == oneHandFlingGeneration && kotlin.math.abs(velocityY) > 30f) {
+                val frameNanos = withFrameNanos { it }
+                val deltaSeconds = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.04f)
+                lastFrameNanos = frameNanos
+                val nextOffset = (oneHandOffsetPx + velocityY * deltaSeconds).coerceIn(0f, oneHandMaxOffsetPx)
+                if (nextOffset == oneHandOffsetPx) break
+                oneHandOffsetPx = nextOffset
+                velocityY *= 0.90f
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { screenHeightPx = it.size.height }
+    ) {
+        if (oneHandModeEnabled && oneHandOffsetPx > 1f) {
+            OneHandModeBackdrop(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(oneHandBackdropHeight)
+                    .graphicsLayer {
+                        alpha = (0.42f + (oneHandOffsetPx / oneHandMaxOffsetPx.coerceAtLeast(1f)) * 0.46f)
+                            .coerceIn(0.42f, 0.88f)
+                    }
+            )
+        }
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(1),
+            state = gridState,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { translationY = oneHandOffsetPx }
+                .pointerInput(oneHandModeEnabled, oneHandMaxOffsetPx) {
+                    if (!oneHandModeEnabled) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        oneHandFlingGeneration++
+                        val gridAtTopWhenGestureStarted = latestGridAtTop
+                        var totalX = 0f
+                        var totalY = 0f
+                        var lastVelocityY = 0f
+                        var movedContentInGesture = false
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            val delta = change.positionChange()
+                            totalX += delta.x
+                            totalY += delta.y
+                            val verticalGesture = kotlin.math.abs(totalY) > kotlin.math.abs(totalX) * 1.15f
+                            val canPullDown = delta.y > 0f && oneHandOffsetPx < oneHandMaxOffsetPx && gridAtTopWhenGestureStarted
+                            val canPushUp = delta.y < 0f && oneHandOffsetPx > 0f
+                            if (verticalGesture && (canPullDown || canPushUp)) {
+                                val boostedDeltaY = delta.y * OneHandScrollSpeedMultiplier
+                                val nextOffset = (oneHandOffsetPx + boostedDeltaY).coerceIn(0f, oneHandMaxOffsetPx)
+                                if (nextOffset != oneHandOffsetPx) {
+                                    oneHandOffsetPx = nextOffset
+                                    lastVelocityY = boostedDeltaY * 60f
+                                    movedContentInGesture = true
+                                    change.consume()
+                                }
+                            }
+                        }
+                        if (movedContentInGesture) startOneHandFling(lastVelocityY)
+                    }
+                },
+            contentPadding = PaddingValues(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(TitlePatternImageResIds.indices.toList(), key = { it }) { index ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(106.dp)
+                        .clickable { onSelect(index) },
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(
+                        width = if (selectedPattern == index) 3.dp else 1.dp,
+                        color = if (selectedPattern == index) Color(0xFF1976D2) else Color(0xFFE0E0E0)
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 5.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White)
+                ) {
+                    Box(Modifier.fillMaxSize()) {
+                        TitlePatternImage(
+                            pattern = index,
+                            modifier = Modifier.matchParentSize()
+                        )
+                        Text(
+                            text = "買い物メモ",
+                            color = Color(0xFF3E2D22),
+                            fontSize = 25.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -2431,6 +3037,7 @@ private fun ReadableShoppingPatternImage(
             ShoppingVisualKind.Sports -> Text("🎾", fontSize = 72.sp)
             ShoppingVisualKind.Service -> ServiceStaffPatternIcon(item.accent, Modifier.fillMaxSize())
             ShoppingVisualKind.HundredYenShop -> HundredYenShopStorePatternIcon(Modifier.fillMaxSize())
+            ShoppingVisualKind.DiscountShop -> HundredYenShopStorePatternIcon(Modifier.fillMaxSize())
             ShoppingVisualKind.DailyGoods -> Text("🧴", fontSize = 72.sp)
         }
     }
@@ -2866,6 +3473,9 @@ private fun MemoDetailScreen(
     memo: ShoppingMemo,
     oneHandModeEnabled: Boolean,
     microphoneEnabled: Boolean,
+    microphoneSettings: MicrophoneSettings,
+    titlePattern: Int? = null,
+    onTitlePatternClick: (() -> Unit)? = null,
     recentlyMovedEntryIds: Set<String>,
     onFinish: () -> Unit,
     onChanged: () -> Unit
@@ -2900,6 +3510,8 @@ private fun MemoDetailScreen(
     var oneHandOffsetPx by remember(memo.id) { mutableStateOf(0f) }
     var oneHandMoveSerial by remember(memo.id) { mutableStateOf(0) }
     var oneHandFlingGeneration by remember(memo.id) { mutableStateOf(0) }
+    var detailVoiceScrollDirection by remember(memo.id) { mutableStateOf(0) }
+    var detailVoiceScrollSerial by remember(memo.id) { mutableStateOf(0) }
     val oneHandMaxOffsetPx = (detailHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
     val oneHandBackdropHeight = with(density) { oneHandOffsetPx.toDp() }
     val currentListAtTop = if (pagerState.currentPage == 0) activeListAtTop else deletedListAtTop
@@ -2916,9 +3528,73 @@ private fun MemoDetailScreen(
         voiceTarget = VoiceTarget.Item
     }
 
+    fun stopDetailVoiceScroll() {
+        detailVoiceScrollDirection = 0
+        detailVoiceScrollSerial++
+    }
+
+    fun startDetailVoiceScroll(direction: Int) {
+        detailVoiceScrollDirection = direction
+        detailVoiceScrollSerial++
+    }
+
+    fun focusItemByVoiceNumber(number: Int) {
+        val entry = memo.entries.filter { it.name.isNotBlank() && !it.checked }.getOrNull(number - 1) ?: return
+        stopDetailVoiceScroll()
+        selectedEntryId = entry.id
+        focusedItemRequestId = entry.id
+        voiceTarget = VoiceTarget.Item
+        scope.launch { pagerState.animateScrollToPage(0) }
+    }
+
     fun handleVoiceText(text: String) {
         val cleaned = text.trim()
         if (cleaned.isBlank()) return
+
+        if (pagerState.currentPage == 1) {
+            val showItemsCommand = microphoneCommand(microphoneSettings, "showItems", "アイテム")
+            if (microphoneSettings.operationEnabled && matchesVoiceCommand(cleaned, showItemsCommand)) {
+                stopDetailVoiceScroll()
+                scope.launch { pagerState.animateScrollToPage(0) }
+            }
+            return
+        }
+
+        if (microphoneSettings.operationEnabled) {
+            when {
+                matchesMicrophoneCommand(cleaned, microphoneSettings, "home", "ホーム") -> {
+                    stopDetailVoiceScroll()
+                    onFinish()
+                    return
+                }
+                matchesMicrophoneCommand(cleaned, microphoneSettings, "showTrash", "ゴミ箱") -> {
+                    stopDetailVoiceScroll()
+                    scope.launch { pagerState.animateScrollToPage(1) }
+                    return
+                }
+                matchesMicrophoneCommand(cleaned, microphoneSettings, "showItems", "アイテム") -> {
+                    stopDetailVoiceScroll()
+                    scope.launch { pagerState.animateScrollToPage(0) }
+                    return
+                }
+                matchesMicrophoneCommand(cleaned, microphoneSettings, "scrollUp", "上スク") -> {
+                    startDetailVoiceScroll(-1)
+                    return
+                }
+                matchesMicrophoneCommand(cleaned, microphoneSettings, "scrollDown", "下スク") -> {
+                    startDetailVoiceScroll(1)
+                    return
+                }
+                matchesMicrophoneCommand(cleaned, microphoneSettings, "stop", "ストップ") -> {
+                    stopDetailVoiceScroll()
+                    return
+                }
+            }
+            extractVoiceItemNumber(cleaned)?.let { number ->
+                focusItemByVoiceNumber(number)
+                return
+            }
+        }
 
         if (voiceTarget == VoiceTarget.Title || memo.title.isBlank()) {
             memo.title = cleaned
@@ -2940,8 +3616,9 @@ private fun MemoDetailScreen(
         onChanged()
     }
 
+    val latestDetailVoiceHandler by rememberUpdatedState(::handleVoiceText)
     val speechController = remember(memo.id) {
-        ContinuousSpeechController(context, ::handleVoiceText)
+        ContinuousSpeechController(context) { latestDetailVoiceHandler(it) }
     }
     DisposableEffect(speechController) {
         onDispose { speechController.destroy() }
@@ -2961,6 +3638,7 @@ private fun MemoDetailScreen(
     LaunchedEffect(microphoneEnabled) {
         if (!microphoneEnabled) {
             speechController.stop()
+            stopDetailVoiceScroll()
         }
     }
 
@@ -3081,64 +3759,22 @@ private fun MemoDetailScreen(
                     }
                 }
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                BasicTextField(
-                    value = memo.title,
-                    onValueChange = {
-                        memo.title = it
-                        onChanged()
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .focusRequester(titleFocusRequester)
-                        .onFocusChanged {
-                            if (it.isFocused) {
-                                speechController.stop()
-                                voiceTarget = VoiceTarget.Title
-                            }
-                        },
-                    textStyle = TextStyle(fontSize = 22.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold, color = Color.Black),
-                    singleLine = false,
-                    maxLines = 2,
-                    cursorBrush = SolidColor(Color(0xFF1976D2)),
-                    decorationBox = { innerTextField ->
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 20.dp)
-                        ) {
-                            if (memo.title.isBlank()) {
-                                Text("タイトルを入力してください", color = Color(0xFFC0C4CC), fontSize = 24.sp)
-                            }
-                            innerTextField()
-                        }
-                    }
-                )
-                if (pagerState.currentPage == 1 && memo.deletedEntries.isNotEmpty()) {
-                    Button(
-                        onClick = {
-                            memo.deletedEntries.clear()
-                            onChanged()
-                        },
-                        modifier = Modifier.height(36.dp),
-                        shape = RoundedCornerShape(18.dp),
-                        border = BorderStroke(1.dp, Color(0xFFD32F2F)),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFFFEBEE),
-                            contentColor = Color(0xFFD32F2F)
-                        ),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
-                    ) {
-                        Text("全消去", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
+            DetailTitleArea(
+                memo = memo,
+                titleFocusRequester = titleFocusRequester,
+                titlePattern = titlePattern,
+                onTitlePatternClick = onTitlePatternClick,
+                showEraseButton = pagerState.currentPage == 1 && memo.deletedEntries.isNotEmpty(),
+                onErase = {
+                    memo.deletedEntries.clear()
+                    onChanged()
+                },
+                onTitleFocused = {
+                    speechController.stop()
+                    voiceTarget = VoiceTarget.Title
+                },
+                onChanged = onChanged
+            )
             Divider(color = Color(0xFFE0E0E0))
             Row(modifier = Modifier.fillMaxWidth().height(50.dp)) {
                 tabs.forEachIndexed { index, title ->
@@ -3191,6 +3827,9 @@ private fun MemoDetailScreen(
                         selectedEntryId = selectedEntryId,
                         focusedItemRequestId = focusedItemRequestId,
                         addButtonScrollRequest = addButtonScrollRequest,
+                        voiceScrollDirection = if (pagerState.currentPage == 0) detailVoiceScrollDirection else 0,
+                        voiceScrollSerial = detailVoiceScrollSerial,
+                        onVoiceScrollFinished = { stopDetailVoiceScroll() },
                         onFocusedItemConsumed = { focusedItemRequestId = null },
                         onSelect = { selectedEntryId = it },
                         onRequestFocus = { focusedItemRequestId = it },
@@ -3213,6 +3852,9 @@ private fun MemoDetailScreen(
                         memo = memo,
                         onItemDragActiveChange = { itemDragActive = it },
                         onListAtTopChanged = { deletedListAtTop = it },
+                        voiceScrollDirection = if (pagerState.currentPage == 1) detailVoiceScrollDirection else 0,
+                        voiceScrollSerial = detailVoiceScrollSerial,
+                        onVoiceScrollFinished = { stopDetailVoiceScroll() },
                         onRestore = {
                             memo.deletedEntries.remove(it)
                             val restored = it.copy(checked = false)
@@ -3258,6 +3900,106 @@ private fun MemoDetailScreen(
     }
 }
 
+@Composable
+private fun DetailTitleArea(
+    memo: ShoppingMemo,
+    titleFocusRequester: FocusRequester,
+    titlePattern: Int?,
+    onTitlePatternClick: (() -> Unit)?,
+    showEraseButton: Boolean,
+    onErase: () -> Unit,
+    onTitleFocused: () -> Unit,
+    onChanged: () -> Unit
+) {
+    val titleInput: @Composable RowScope.() -> Unit = {
+        BasicTextField(
+            value = memo.title,
+            onValueChange = {
+                memo.title = it
+                onChanged()
+            },
+            modifier = Modifier
+                .weight(1f)
+                .focusRequester(titleFocusRequester)
+                .onFocusChanged {
+                    if (it.isFocused) onTitleFocused()
+                },
+            textStyle = TextStyle(
+                fontSize = 22.sp,
+                lineHeight = 27.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black
+            ),
+            singleLine = false,
+            maxLines = 2,
+            cursorBrush = SolidColor(Color(0xFF1976D2)),
+            decorationBox = { innerTextField ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 20.dp)
+                ) {
+                    if (memo.title.isBlank()) {
+                        Text("タイトルを入力してください", color = Color(0xFFC0C4CC), fontSize = 24.sp)
+                    }
+                    innerTextField()
+                }
+            }
+        )
+        if (showEraseButton) {
+            Button(
+                onClick = onErase,
+                modifier = Modifier.height(36.dp),
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, Color(0xFFD32F2F)),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFFFEBEE),
+                    contentColor = Color(0xFFD32F2F)
+                ),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+            ) {
+                Text("全消去", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+
+    if (titlePattern != null && onTitlePatternClick != null) {
+        TitlePatternHeader(
+            title = TemporaryTitlePatternPreviewText,
+            pattern = titlePattern,
+            onClick = onTitlePatternClick
+        ) {
+            if (showEraseButton) {
+                Button(
+                    onClick = onErase,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 12.dp)
+                        .height(36.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    border = BorderStroke(1.dp, Color(0xFFD32F2F)),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFFFEBEE),
+                        contentColor = Color(0xFFD32F2F)
+                    ),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                ) {
+                    Text("全消去", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    } else {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            content = titleInput
+        )
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ActiveItemsPage(
@@ -3265,6 +4007,9 @@ private fun ActiveItemsPage(
     selectedEntryId: String?,
     focusedItemRequestId: String?,
     addButtonScrollRequest: Int,
+    voiceScrollDirection: Int,
+    voiceScrollSerial: Int,
+    onVoiceScrollFinished: () -> Unit,
     onFocusedItemConsumed: () -> Unit,
     onSelect: (String?) -> Unit,
     onRequestFocus: (String) -> Unit,
@@ -3312,6 +4057,24 @@ private fun ActiveItemsPage(
 
     LaunchedEffect(listAtTop) {
         onListAtTopChanged(listAtTop)
+    }
+
+    LaunchedEffect(voiceScrollSerial, voiceScrollDirection) {
+        val direction = voiceScrollDirection
+        if (direction == 0) return@LaunchedEffect
+        while (true) {
+            val canScroll = if (direction < 0) listState.canScrollBackward else listState.canScrollForward
+            if (!canScroll) {
+                onVoiceScrollFinished()
+                break
+            }
+            val consumed = listState.scrollBy(direction * VoiceScrollStepPx)
+            if (kotlin.math.abs(consumed) < 0.5f) {
+                onVoiceScrollFinished()
+                break
+            }
+            delay(VoiceScrollDelayMillis)
+        }
     }
 
     fun bottomAlignedOffset(extraLiftPx: Int): Int {
@@ -4353,6 +5116,9 @@ private fun DeletedItemsPage(
     memo: ShoppingMemo,
     onItemDragActiveChange: (Boolean) -> Unit,
     onListAtTopChanged: (Boolean) -> Unit,
+    voiceScrollDirection: Int,
+    voiceScrollSerial: Int,
+    onVoiceScrollFinished: () -> Unit,
     onRestore: (ShoppingEntry) -> Unit,
     onErase: (ShoppingEntry) -> Unit
 ) {
@@ -4372,6 +5138,24 @@ private fun DeletedItemsPage(
 
     LaunchedEffect(listAtTop) {
         onListAtTopChanged(listAtTop)
+    }
+
+    LaunchedEffect(voiceScrollSerial, voiceScrollDirection) {
+        val direction = voiceScrollDirection
+        if (direction == 0) return@LaunchedEffect
+        while (true) {
+            val canScroll = if (direction < 0) listState.canScrollBackward else listState.canScrollForward
+            if (!canScroll) {
+                onVoiceScrollFinished()
+                break
+            }
+            val consumed = listState.scrollBy(direction * VoiceScrollStepPx)
+            if (kotlin.math.abs(consumed) < 0.5f) {
+                onVoiceScrollFinished()
+                break
+            }
+            delay(VoiceScrollDelayMillis)
+        }
     }
 
     fun startDrag(entry: ShoppingEntry) {
@@ -4519,6 +5303,7 @@ private fun MicFab(
     onClick: () -> Unit
 ) {
     val hasPartial = controller.partialText.isNotBlank()
+    val isHearingSpeech = controller.isHearingSpeech
     val recordingTransition = rememberInfiniteTransition(label = "recording-stop")
     val stopScale by recordingTransition.animateFloat(
         initialValue = 0.72f,
@@ -4547,7 +5332,7 @@ private fun MicFab(
             containerColor = if (controller.isRunning) Color(0xFFE11D48) else Color(0xFF1E88E5),
             modifier = Modifier.size(86.dp)
         ) {
-            if (controller.isRunning && !hasPartial) {
+            if (controller.isRunning && !isHearingSpeech) {
                 Box(
                     modifier = Modifier
                         .size(34.dp)
@@ -4560,11 +5345,11 @@ private fun MicFab(
             } else {
                 Icon(
                     painter = painterResource(
-                        id = if (hasPartial) R.drawable.ic_fab_ear else R.drawable.ic_fab_mic
+                        id = if (isHearingSpeech) R.drawable.ic_fab_ear else R.drawable.ic_fab_mic
                     ),
                     contentDescription = null,
                     tint = Color.White,
-                    modifier = Modifier.size(if (hasPartial) 38.dp else 50.dp)
+                    modifier = Modifier.size(if (isHearingSpeech) 46.dp else 50.dp)
                 )
             }
         }
@@ -4684,6 +5469,7 @@ private val MicrophoneStopOptions = listOf(
 private val MicrophoneCommandRows = listOf(
     MicrophoneCommandRow("home", "ホーム"),
     MicrophoneCommandRow("showTrash", "ゴミ箱を表示"),
+    MicrophoneCommandRow("showItems", "アイテムを表示"),
     MicrophoneCommandRow("scrollUp", "スクロール上"),
     MicrophoneCommandRow("scrollDown", "スクロール下"),
     MicrophoneCommandRow("stop", "ストップ"),
@@ -5083,6 +5869,1004 @@ private fun SettingRow(label: String, value: String) {
 }
 
 @Composable
+private fun MemoMoveEditScreen(
+    memos: List<ShoppingMemo>,
+    onChanged: () -> Unit
+) {
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val memoIdKey = memos.joinToString("|") { it.id }
+    var leftMemoId by remember { mutableStateOf<String?>(null) }
+    var rightMemoId by remember { mutableStateOf<String?>(null) }
+    var selectingSide by remember { mutableStateOf<EditPaneSide?>(null) }
+    var rootBounds by remember { mutableStateOf<Rect?>(null) }
+    var leftPaneBounds by remember { mutableStateOf<Rect?>(null) }
+    var rightPaneBounds by remember { mutableStateOf<Rect?>(null) }
+    var draggingEntry by remember { mutableStateOf<EditDraggingEntry?>(null) }
+    var draggingBounds by remember { mutableStateOf<Rect?>(null) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    var dragPoint by remember { mutableStateOf(Offset.Zero) }
+    val leftMemo = memos.firstOrNull { it.id == leftMemoId }
+    val rightMemo = memos.firstOrNull { it.id == rightMemoId }
+    val leftDropActive = draggingEntry?.side == EditPaneSide.Right && leftPaneBounds?.contains(dragPoint) == true
+    val rightDropActive = draggingEntry?.side == EditPaneSide.Left && rightPaneBounds?.contains(dragPoint) == true
+
+    LaunchedEffect(memoIdKey) {
+        val ids = memos.map { it.id }
+        if (leftMemoId !in ids) leftMemoId = ids.firstOrNull()
+        if (rightMemoId !in ids || rightMemoId == leftMemoId) {
+            rightMemoId = ids.firstOrNull { it != leftMemoId } ?: ids.firstOrNull()
+        }
+    }
+
+    fun selectMemo(side: EditPaneSide, memo: ShoppingMemo) {
+        when (side) {
+            EditPaneSide.Left -> {
+                if (memo.id == rightMemoId) rightMemoId = leftMemoId
+                leftMemoId = memo.id
+            }
+            EditPaneSide.Right -> {
+                if (memo.id == leftMemoId) leftMemoId = rightMemoId
+                rightMemoId = memo.id
+            }
+        }
+        selectingSide = null
+    }
+
+    fun swapSelectedMemos() {
+        val oldLeft = leftMemoId
+        leftMemoId = rightMemoId
+        rightMemoId = oldLeft
+    }
+
+    fun moveEntryTo(source: ShoppingMemo, target: ShoppingMemo, entry: ShoppingEntry) {
+        if (source.id == target.id || entry.name.isBlank()) return
+        if (!source.entries.remove(entry)) return
+        val insertIndex = if (entry.checked) {
+            target.entries.size
+        } else {
+            val firstDoneOrBlank = target.entries.indexOfFirst { it.name.isBlank() || it.checked }
+            if (firstDoneOrBlank >= 0) firstDoneOrBlank else target.entries.size
+        }
+        target.entries.add(insertIndex, entry)
+        ensureDisplayBlankEntry(source)
+        ensureDisplayBlankEntry(target)
+        onChanged()
+    }
+
+    fun finishDrag() {
+        val dragging = draggingEntry
+        if (dragging != null) {
+            val target = when {
+                dragging.side == EditPaneSide.Left && rightPaneBounds?.contains(dragPoint) == true -> rightMemo
+                dragging.side == EditPaneSide.Right && leftPaneBounds?.contains(dragPoint) == true -> leftMemo
+                else -> null
+            }
+            if (target != null) {
+                moveEntryTo(dragging.memo, target, dragging.entry)
+            }
+        }
+        draggingEntry = null
+        draggingBounds = null
+        dragOffset = Offset.Zero
+        dragPoint = Offset.Zero
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFFAFCFF))
+            .onGloballyPositioned { rootBounds = it.boundsInWindow() }
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            Header("編集")
+            if (memos.isEmpty()) {
+                PlaceholderBody("移動できるカードがありません")
+            } else {
+                EditInstructionPanel()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    EditMemoPane(
+                        label = "現在のカード",
+                        labelColor = Color(0xFF43A047),
+                        headerColor = Color(0xFFE8F5E9),
+                        side = EditPaneSide.Left,
+                        memo = leftMemo,
+                        dropActive = leftDropActive,
+                        draggingEntryId = draggingEntry?.entry?.id,
+                        onHeaderClick = { selectingSide = EditPaneSide.Left },
+                        onPanePositioned = { leftPaneBounds = it },
+                        onEntryDragStart = { memo, entry, start, bounds ->
+                            draggingEntry = EditDraggingEntry(EditPaneSide.Left, memo, entry)
+                            draggingBounds = bounds
+                            dragOffset = Offset.Zero
+                            dragPoint = Offset(bounds.left + start.x, bounds.top + start.y)
+                        },
+                        onEntryDrag = { amount ->
+                            dragOffset += amount
+                            dragPoint += amount
+                        },
+                        onEntryDragEnd = ::finishDrag,
+                        onEntryDragCancel = {
+                            draggingEntry = null
+                            draggingBounds = null
+                            dragOffset = Offset.Zero
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    EditCenterSwapControl(
+                        onClick = ::swapSelectedMemos,
+                        modifier = Modifier
+                            .width(44.dp)
+                            .fillMaxHeight()
+                            .padding(horizontal = 5.dp)
+                    )
+                    EditMemoPane(
+                        label = "切り替え後のカード",
+                        labelColor = Color(0xFF7E57C2),
+                        headerColor = Color(0xFFF1E3FF),
+                        side = EditPaneSide.Right,
+                        memo = rightMemo,
+                        dropActive = rightDropActive,
+                        draggingEntryId = draggingEntry?.entry?.id,
+                        onHeaderClick = { selectingSide = EditPaneSide.Right },
+                        onPanePositioned = { rightPaneBounds = it },
+                        onEntryDragStart = { memo, entry, start, bounds ->
+                            draggingEntry = EditDraggingEntry(EditPaneSide.Right, memo, entry)
+                            draggingBounds = bounds
+                            dragOffset = Offset.Zero
+                            dragPoint = Offset(bounds.left + start.x, bounds.top + start.y)
+                        },
+                        onEntryDrag = { amount ->
+                            dragOffset += amount
+                            dragPoint += amount
+                        },
+                        onEntryDragEnd = ::finishDrag,
+                        onEntryDragCancel = {
+                            draggingEntry = null
+                            draggingBounds = null
+                            dragOffset = Offset.Zero
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+
+        val dragging = draggingEntry
+        val bounds = draggingBounds
+        val root = rootBounds
+        if (dragging != null && bounds != null && root != null) {
+            EditFloatingEntryRow(
+                entry = dragging.entry,
+                modifier = Modifier
+                    .graphicsLayer {
+                        translationX = bounds.left - root.left + dragOffset.x
+                        translationY = bounds.top - root.top + dragOffset.y
+                        shadowElevation = 22f
+                    }
+                    .width(with(density) { bounds.width.toDp() })
+                    .zIndex(30f)
+            )
+        }
+    }
+
+    selectingSide?.let { side ->
+        MemoSelectDialog(
+            side = side,
+            memos = memos,
+            currentMemoId = if (side == EditPaneSide.Left) leftMemoId else rightMemoId,
+            onSelect = { selectMemo(side, it) },
+            onDismiss = { selectingSide = null }
+        )
+    }
+}
+
+@Composable
+private fun EditInstructionPanel() {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xFFFFF8E1),
+        border = BorderStroke(1.dp, Color(0xFFFFECB3))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("💡", fontSize = 26.sp)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "カードを左右に並べて、アイテムを移動できます",
+                    color = Color(0xFF3E2D22),
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "タイトル部分をタップするとカードを切り替え、行を長押しして反対側へドラッグします。",
+                    color = Color(0xFF5D4037),
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditMemoPane(
+    label: String,
+    labelColor: Color,
+    headerColor: Color,
+    side: EditPaneSide,
+    memo: ShoppingMemo?,
+    dropActive: Boolean,
+    draggingEntryId: String?,
+    onHeaderClick: () -> Unit,
+    onPanePositioned: (Rect) -> Unit,
+    onEntryDragStart: (ShoppingMemo, ShoppingEntry, Offset, Rect) -> Unit,
+    onEntryDrag: (Offset) -> Unit,
+    onEntryDragEnd: () -> Unit,
+    onEntryDragCancel: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier.fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = labelColor,
+            modifier = Modifier.padding(bottom = 7.dp)
+        ) {
+            Text(
+                label,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp),
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .onGloballyPositioned { onPanePositioned(it.boundsInWindow()) },
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(if (dropActive) 3.dp else 1.dp, if (dropActive) labelColor else Color(0xFFD5D5D5)),
+            elevation = CardDefaults.cardElevation(defaultElevation = if (dropActive) 9.dp else 3.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White)
+        ) {
+            if (memo == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("カードなし", color = Color(0xFF999999), fontSize = 14.sp)
+                }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    EditMemoHeader(
+                        memo = memo,
+                        color = headerColor,
+                        accent = labelColor,
+                        onClick = onHeaderClick
+                    )
+                    Divider(color = Color(0xFFE0E0E0))
+                    val entries = memo.entries.filter { it.name.isNotBlank() }
+                    if (entries.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("アイテムなし", color = Color(0xFF999999), fontSize = 13.sp)
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(vertical = 4.dp)
+                        ) {
+                            items(entries, key = { it.id }) { entry ->
+                                EditMoveEntryRow(
+                                    memo = memo,
+                                    entry = entry,
+                                    side = side,
+                                    isDragging = draggingEntryId == entry.id,
+                                    onDragStart = onEntryDragStart,
+                                    onDrag = onEntryDrag,
+                                    onDragEnd = onEntryDragEnd,
+                                    onDragCancel = onEntryDragCancel
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditMemoHeader(
+    memo: ShoppingMemo,
+    color: Color,
+    accent: Color,
+    onClick: () -> Unit
+) {
+    val doneCount = memo.entries.count { it.checked && it.name.isNotBlank() }
+    val totalCount = memo.entries.count { it.name.isNotBlank() }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                memo.title.ifBlank { "タイトル未入力" },
+                color = accent,
+                fontSize = 17.sp,
+                lineHeight = 20.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                "$doneCount/$totalCount 件 完了",
+                color = accent,
+                fontSize = 12.sp,
+                lineHeight = 14.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Text("↔", color = accent, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun EditMoveEntryRow(
+    memo: ShoppingMemo,
+    entry: ShoppingEntry,
+    side: EditPaneSide,
+    isDragging: Boolean,
+    onDragStart: (ShoppingMemo, ShoppingEntry, Offset, Rect) -> Unit,
+    onDrag: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit
+) {
+    var rowBounds by remember { mutableStateOf<Rect?>(null) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer { alpha = if (isDragging) 0.18f else 1f }
+            .onGloballyPositioned { rowBounds = it.boundsInWindow() }
+            .pointerInput(memo.id, entry.id, side) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { start ->
+                        rowBounds?.let { onDragStart(memo, entry, start, it) }
+                    },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        onDrag(amount)
+                    },
+                    onDragEnd = onDragEnd,
+                    onDragCancel = onDragCancel
+                )
+            }
+            .padding(horizontal = 8.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("・", color = Color(0xFF555555), fontSize = 16.sp)
+        Spacer(Modifier.width(5.dp))
+        Text(
+            text = entry.name,
+            color = if (entry.checked) Color(0xFF777777) else Color.Black,
+            fontSize = 15.sp,
+            lineHeight = 18.sp,
+            textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Text("≡", color = Color(0xFFBDBDBD), fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    }
+    Divider(color = Color(0xFFE8E8E8))
+}
+
+@Composable
+private fun EditFloatingEntryRow(
+    entry: ShoppingEntry,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(9.dp),
+        color = Color.White,
+        shadowElevation = 14.dp,
+        border = BorderStroke(1.dp, Color(0xFFBBD7F6))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("・", color = Color(0xFF1976D2), fontSize = 18.sp)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                entry.name,
+                color = if (entry.checked) Color(0xFF777777) else Color.Black,
+                textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Text("↔", color = Color(0xFF43A047), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun EditCenterSwapControl(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Surface(
+            modifier = Modifier
+                .size(38.dp)
+                .clickable(onClick = onClick),
+            shape = CircleShape,
+            color = Color(0xFF7CB342)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text("↔", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MemoSelectDialog(
+    side: EditPaneSide,
+    memos: List<ShoppingMemo>,
+    currentMemoId: String?,
+    onSelect: (ShoppingMemo) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(if (side == EditPaneSide.Left) "左のカードを選択" else "右のカードを選択", fontWeight = FontWeight.Bold)
+        },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                items(memos, key = { it.id }) { memo ->
+                    val selected = memo.id == currentMemoId
+                    val doneCount = memo.entries.count { it.checked && it.name.isNotBlank() }
+                    val totalCount = memo.entries.count { it.name.isNotBlank() }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(memo) }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = selected, onClick = { onSelect(memo) })
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                memo.title.ifBlank { "タイトル未入力" },
+                                color = if (selected) Color(0xFF1976D2) else Color.Black,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text("$doneCount/$totalCount 件 完了", color = Color(0xFF666666), fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("閉じる")
+            }
+        }
+    )
+}
+
+private fun supportAdTodayKey(): String {
+    return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+}
+
+@Composable
+private fun AdsSupportScreen(
+    onVideoOverlayVisibleChange: (Boolean) -> Unit
+) {
+    val context = LocalContext.current
+    val todayKey = remember { supportAdTodayKey() }
+    var watchedDate by remember { mutableStateOf(loadSupportAdWatchDate(context)) }
+    var showVideoAd by remember { mutableStateOf(false) }
+    val watchedToday = watchedDate == todayKey
+
+    LaunchedEffect(showVideoAd) {
+        onVideoOverlayVisibleChange(showVideoAd)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onVideoOverlayVisibleChange(false) }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFFFFDF8))
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            DummyBannerAd(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+            )
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item {
+                    SupportDeveloperPanel(
+                        watchedToday = watchedToday,
+                        onWatchAd = {
+                            if (!watchedToday) showVideoAd = true
+                        }
+                    )
+                }
+            }
+        }
+
+        if (showVideoAd) {
+            DummyRewardedVideoOverlay(
+                onDismiss = { showVideoAd = false },
+                onComplete = {
+                    saveSupportAdWatchDate(context, todayKey)
+                    watchedDate = todayKey
+                    showVideoAd = false
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun DummyBannerAd(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.height(54.dp),
+        color = Color(0xFFF6F7F2),
+        border = BorderStroke(1.dp, Color(0xFFD7E6CC))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "AdMob バナー広告（ダミー）",
+                color = Color(0xFF6F7F66),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+@Composable
+private fun SupportDeveloperPanel(
+    watchedToday: Boolean,
+    onWatchAd: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+        border = BorderStroke(1.dp, Color(0xFFE7EAD9))
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            SupportHeader()
+            Spacer(Modifier.height(18.dp))
+            Text(
+                text = "いつもありがとうございます！",
+                color = Color(0xFF4A2E1F),
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(8.dp))
+            SupportHeartIllustration()
+            Spacer(Modifier.height(12.dp))
+            SupportMessage()
+            Spacer(Modifier.height(18.dp))
+            SupportBenefitPanel()
+            Spacer(Modifier.height(18.dp))
+            SupportWatchButton(watchedToday = watchedToday, onClick = onWatchAd)
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = if (watchedToday) "本日は視聴済みです" else "視聴は1日1回までです",
+                color = Color(0xFF666666),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(12.dp))
+            SupportThanksBox()
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun SupportHeader() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(78.dp)
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            drawRect(Color(0xFFEAF5DE))
+            val wave = Path().apply {
+                moveTo(0f, size.height * 0.72f)
+                cubicTo(
+                    size.width * 0.22f, size.height * 0.90f,
+                    size.width * 0.32f, size.height * 0.52f,
+                    size.width * 0.50f, size.height * 0.72f
+                )
+                cubicTo(
+                    size.width * 0.68f, size.height * 0.92f,
+                    size.width * 0.78f, size.height * 0.52f,
+                    size.width, size.height * 0.72f
+                )
+                lineTo(size.width, size.height)
+                lineTo(0f, size.height)
+                close()
+            }
+            drawPath(wave, Color.White)
+        }
+        Text(
+            text = "開発者を応援する",
+            modifier = Modifier.align(Alignment.Center),
+            color = Color(0xFF1B5E20),
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+private fun SupportHeartIllustration() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(138.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val center = Offset(size.width / 2f, size.height * 0.48f)
+            drawCircle(Color(0xFFFFEBEE), radius = size.minDimension * 0.30f, center = center)
+            drawLine(Color(0xFFF9A825), Offset(size.width * 0.18f, size.height * 0.25f), Offset(size.width * 0.26f, size.height * 0.34f), strokeWidth = 5f)
+            drawLine(Color(0xFFF9A825), Offset(size.width * 0.82f, size.height * 0.25f), Offset(size.width * 0.74f, size.height * 0.34f), strokeWidth = 5f)
+            drawLine(Color(0xFF7CB342), Offset(size.width * 0.30f, size.height * 0.60f), Offset(size.width * 0.38f, size.height * 0.56f), strokeWidth = 4f)
+            drawLine(Color(0xFF7CB342), Offset(size.width * 0.70f, size.height * 0.60f), Offset(size.width * 0.62f, size.height * 0.56f), strokeWidth = 4f)
+        }
+        Text(
+            text = "❤",
+            color = Color(0xFFEF6C73),
+            fontSize = 86.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(88.dp)
+        ) {
+            Text("╲", color = Color(0xFFF4B183), fontSize = 40.sp, fontWeight = FontWeight.Bold)
+            Text("╱", color = Color(0xFFF4B183), fontSize = 40.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun SupportMessage() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "このアプリは、開発を継続するための",
+            color = Color(0xFF3E2D22),
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            lineHeight = 28.sp
+        )
+        Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            Text("運営費", color = Color(0xFF558B2F), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Text("がかかっています。", color = Color(0xFF3E2D22), fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(
+            text = "よろしければ、広告を視聴して",
+            color = Color(0xFF3E2D22),
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+        Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            Text("開発者を応援", color = Color(0xFFFF6F7F), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text("していただけると嬉しいです。", color = Color(0xFF3E2D22), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun SupportBenefitPanel() {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = Color(0xFFFFFDF5),
+        border = BorderStroke(1.dp, Color(0xFFF1DFA4))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Surface(
+                color = Color(0xFF66A84F),
+                shape = RoundedCornerShape(6.dp)
+            ) {
+                Text(
+                    text = "応援していただくと…",
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 7.dp),
+                    color = Color.White,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SupportBenefitItem(
+                    icon = "🌱",
+                    title = "開発の継続",
+                    body = "新しい機能や改善を\n続けることができます",
+                    titleColor = Color(0xFF2E7D32),
+                    modifier = Modifier.weight(1f)
+                )
+                SupportBenefitItem(
+                    icon = "❤",
+                    title = "より良いアプリに",
+                    body = "使いやすく、便利な\nアプリになります",
+                    titleColor = Color(0xFFEF6C73),
+                    modifier = Modifier.weight(1f)
+                )
+                SupportBenefitItem(
+                    icon = "🎁",
+                    title = "新機能の追加",
+                    body = "ご要望の多い機能を\n実現していきます",
+                    titleColor = Color(0xFFF57F17),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SupportBenefitItem(
+    icon: String,
+    title: String,
+    body: String,
+    titleColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            modifier = Modifier.size(54.dp),
+            shape = CircleShape,
+            color = titleColor.copy(alpha = 0.13f)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(icon, fontSize = 30.sp, textAlign = TextAlign.Center)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(title, color = titleColor, fontSize = 15.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(5.dp))
+        Text(body, color = Color(0xFF333333), fontSize = 12.sp, lineHeight = 16.sp, textAlign = TextAlign.Center)
+    }
+}
+
+@Composable
+private fun SupportWatchButton(
+    watchedToday: Boolean,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        enabled = !watchedToday,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp)
+            .height(76.dp),
+        shape = RoundedCornerShape(36.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color(0xFF66A84F),
+            disabledContainerColor = Color(0xFFB0B0B0),
+            contentColor = Color.White,
+            disabledContentColor = Color.White
+        )
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Text("▶", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(14.dp))
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = if (watchedToday) "本日の応援は完了しました" else "動画広告を視聴して応援する",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    lineHeight = 24.sp
+                )
+                if (!watchedToday) {
+                    Text("(約30秒)", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SupportThanksBox() {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = Color.White,
+        border = BorderStroke(1.dp, Color(0xFFE6E6E6))
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.size(62.dp),
+                shape = CircleShape,
+                color = Color(0xFFFFF7E6)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("❤", color = Color(0xFFEF6C73), fontSize = 34.sp)
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("応援してくださり、ありがとうございます！", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF3E2D22))
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "皆さまの応援が、より良いアプリ作りの大きな力になっています。",
+                    fontSize = 14.sp,
+                    color = Color(0xFF333333),
+                    lineHeight = 20.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DummyRewardedVideoOverlay(
+    onDismiss: () -> Unit,
+    onComplete: () -> Unit
+) {
+    var remainingSeconds by remember { mutableStateOf(5) }
+
+    BackHandler { onDismiss() }
+    LaunchedEffect(Unit) {
+        while (remainingSeconds > 0) {
+            delay(1000)
+            remainingSeconds--
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(50f)
+            .background(Color(0xEE000000))
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(18.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "動画広告（ダミー）",
+                color = Color.White,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(18.dp))
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f),
+                shape = RoundedCornerShape(16.dp),
+                color = Color(0xFF1B2A1B),
+                border = BorderStroke(1.dp, Color(0xFF9CCC65))
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("▶", color = Color.White, fontSize = 56.sp, fontWeight = FontWeight.Bold)
+                        Text("応援広告を再生中", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                        Text("実広告に差し替えるための仮画面です", color = Color(0xFFDDEEDD), fontSize = 13.sp)
+                    }
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            Text(
+                text = if (remainingSeconds > 0) "視聴完了まで あと ${remainingSeconds} 秒" else "視聴完了できます",
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(16.dp))
+            Button(
+                onClick = onComplete,
+                enabled = remainingSeconds == 0,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF66A84F),
+                    disabledContainerColor = Color(0xFF616161)
+                ),
+                shape = RoundedCornerShape(24.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp)
+            ) {
+                Text("視聴完了", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            }
+            TextButton(onClick = onDismiss) {
+                Text("閉じる", color = Color.White)
+            }
+        }
+    }
+}
+
+@Composable
 private fun PlaceholderScreen(title: String, body: String) {
     Column(Modifier.fillMaxSize()) {
         Header(title = title)
@@ -5132,10 +6916,10 @@ private fun Header(
 private fun BottomIconBar(
     screen: Screen,
     onHome: () -> Unit,
-    onMap: () -> Unit,
+    onEdit: () -> Unit,
     onSettings: () -> Unit,
     onFavorite: () -> Unit,
-    onOwner: () -> Unit
+    onAds: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -5145,29 +6929,50 @@ private fun BottomIconBar(
             .background(Color.White),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        BottomIcon(R.drawable.icon_potato, "オーナー", false, onOwner)
-        BottomIcon(R.drawable.icon_favorite, "お気に入り", screen == Screen.Favorites, onFavorite)
-        BottomIcon(R.drawable.icon_carrot, "ホーム", screen == Screen.Home, onHome)
-        BottomIcon(R.drawable.icon_tomato, "設定", screen == Screen.Settings, onSettings)
-        BottomIcon(R.drawable.icon_cabbage, "地図", screen == Screen.Map, onMap)
+        BottomIcon(R.drawable.icon_ad, R.drawable.nav_selected_ad, "広告", screen == Screen.Ads, onAds)
+        BottomIcon(R.drawable.icon_edit, R.drawable.nav_selected_edit, "編集", screen == Screen.Edit, onEdit)
+        BottomIcon(R.drawable.icon_home_nav, R.drawable.nav_selected_home, "ホーム", screen == Screen.Home, onHome)
+        BottomIcon(R.drawable.icon_favorite_nav, R.drawable.nav_selected_favorite, "お気に入り", screen == Screen.Favorites, onFavorite)
+        BottomIcon(R.drawable.icon_settings_nav, R.drawable.nav_selected_settings, "設定", screen == Screen.Settings, onSettings)
     }
 }
 
 @Composable
-private fun RowScope.BottomIcon(drawableId: Int, label: String, selected: Boolean, onClick: () -> Unit) {
+private fun RowScope.BottomIcon(
+    drawableId: Int,
+    selectedDrawableId: Int,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val selectedText = Color(0xFF0D47A1)
+    val normalText = Color(0xFF444444)
     Column(
         modifier = Modifier
             .weight(1f)
             .fillMaxHeight()
+            .padding(horizontal = 3.dp, vertical = 4.dp)
             .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Image(
-            painter = painterResource(drawableId),
+            painter = painterResource(if (selected) selectedDrawableId else drawableId),
             contentDescription = label,
-            modifier = Modifier.size(if (selected) 76.dp else 70.dp),
+            modifier = Modifier
+                .size(if (selected) 58.dp else 44.dp)
+                .graphicsLayer { alpha = if (selected) 1f else 0.72f },
             contentScale = ContentScale.Fit
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            lineHeight = 12.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (selected) selectedText else normalText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }

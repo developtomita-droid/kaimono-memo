@@ -19,6 +19,8 @@ class ContinuousSpeechController(
         private set
     var partialText by mutableStateOf("")
         private set
+    var isHearingSpeech by mutableStateOf(false)
+        private set
 
     private var recognizer: SpeechRecognizer? = null
     private var restartRequested = false
@@ -35,6 +37,7 @@ class ContinuousSpeechController(
         restartRequested = false
         isRunning = false
         partialText = ""
+        isHearingSpeech = false
         recognizer?.stopListening()
         recognizer?.destroy()
         recognizer = null
@@ -44,6 +47,7 @@ class ContinuousSpeechController(
         val text = partialText.trim()
         if (text.isNotBlank()) {
             partialText = ""
+            isHearingSpeech = false
             onFinalText(text)
         }
     }
@@ -57,7 +61,9 @@ class ContinuousSpeechController(
         recognizer = SpeechRecognizer.createSpeechRecognizer(context).also { speechRecognizer ->
             speechRecognizer.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) = Unit
-                override fun onBeginningOfSpeech() = Unit
+                override fun onBeginningOfSpeech() {
+                    isHearingSpeech = true
+                }
                 override fun onRmsChanged(rmsdB: Float) = Unit
                 override fun onBufferReceived(buffer: ByteArray?) = Unit
                 override fun onEndOfSpeech() = Unit
@@ -68,6 +74,7 @@ class ContinuousSpeechController(
                         ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         ?.firstOrNull()
                         .orEmpty()
+                    if (partialText.isNotBlank()) isHearingSpeech = true
                 }
 
                 override fun onResults(results: Bundle?) {
@@ -77,12 +84,14 @@ class ContinuousSpeechController(
                         ?.trim()
                         .orEmpty()
                     partialText = ""
+                    isHearingSpeech = false
                     if (text.isNotBlank()) onFinalText(text)
                     restartIfNeeded()
                 }
 
                 override fun onError(error: Int) {
                     partialText = ""
+                    isHearingSpeech = false
                     restartIfNeeded()
                 }
             })
