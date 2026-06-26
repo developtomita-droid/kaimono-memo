@@ -10,21 +10,26 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.Orientation
@@ -765,7 +770,12 @@ private fun AdvancedHomeScreen(
     var controlScrollReachedTopInGesture by remember { mutableStateOf(false) }
     var homeVoiceScrollDirection by remember { mutableStateOf(0) }
     var homeVoiceScrollSerial by remember { mutableStateOf(0) }
-    val oneHandMaxOffsetPx = (homeHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
+    val homeOneHandModeEnabled = false
+    val oneHandMaxOffsetPx = if (homeOneHandModeEnabled) {
+        (homeHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
+    } else {
+        0f
+    }
     val oneHandBackdropHeight = with(density) { oneHandOffsetPx.toDp() }
     val oneHandOffsetDp = with(density) { oneHandOffsetPx.toDp() }
     val dragActive = draggingId != null || draggingTemporaryEntry != null
@@ -996,7 +1006,7 @@ private fun AdvancedHomeScreen(
     }
 
     fun applyOneHandControlScroll(delta: Float): Float {
-        if (!oneHandModeEnabled || oneHandMaxOffsetPx <= 0f) return 0f
+        if (!homeOneHandModeEnabled || oneHandMaxOffsetPx <= 0f) return 0f
         val before = oneHandOffsetPx
         val boostedDelta = delta * OneHandScrollSpeedMultiplier
         val nextOffset = (oneHandOffsetPx + boostedDelta).coerceIn(0f, oneHandMaxOffsetPx)
@@ -1030,8 +1040,8 @@ private fun AdvancedHomeScreen(
         return gridConsumed
     }
 
-    LaunchedEffect(oneHandModeEnabled) {
-        if (!oneHandModeEnabled) oneHandOffsetPx = 0f
+    LaunchedEffect(homeOneHandModeEnabled) {
+        if (!homeOneHandModeEnabled) oneHandOffsetPx = 0f
     }
 
     Box(
@@ -1055,11 +1065,7 @@ private fun AdvancedHomeScreen(
                         totalX += delta.x
                         totalY += delta.y
                         if (kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
-                            if (pagerState.currentPage == 0 && totalX < -DetailBackSwipeThresholdPx) {
-                                change.consume()
-                                scope.launch { pagerState.animateScrollToPage(1) }
-                                break
-                            } else if (pagerState.currentPage == 1 && totalX > DetailBackSwipeThresholdPx) {
+                            if (pagerState.currentPage == 1 && totalX > DetailBackSwipeThresholdPx) {
                                 change.consume()
                                 scope.launch { pagerState.animateScrollToPage(0) }
                                 break
@@ -1069,7 +1075,7 @@ private fun AdvancedHomeScreen(
                 }
             }
     ) {
-        if (oneHandModeEnabled && oneHandOffsetPx > 1f) {
+        if (homeOneHandModeEnabled && oneHandOffsetPx > 1f) {
             OneHandModeBackdrop(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1084,8 +1090,8 @@ private fun AdvancedHomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer { translationY = oneHandOffsetPx }
-                .pointerInput(oneHandModeEnabled, oneHandMaxOffsetPx, dragActive) {
-                    if (!oneHandModeEnabled || dragActive) return@pointerInput
+                    .pointerInput(homeOneHandModeEnabled, oneHandMaxOffsetPx, dragActive) {
+                    if (!homeOneHandModeEnabled || dragActive) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                         val home = latestHomeBounds
@@ -1384,200 +1390,219 @@ private fun HomeItemsPage(
     onControlScrollGestureStart: () -> Unit,
     onControlScroll: (Float) -> Float
 ) {
-    val controlHeight = 190.dp
-    val density = LocalDensity.current
-    val scope = rememberCoroutineScope()
-    var pageBounds by remember { mutableStateOf<Rect?>(null) }
-    var gridBounds by remember { mutableStateOf<Rect?>(null) }
-    val controlHeightPx = with(density) { controlHeight.toPx() }
-    val autoScrollEdgePx = with(density) { 8.dp.toPx() }
-    val autoScrollDragThresholdPx = with(density) { 32.dp.toPx() }
-    val autoScrollStepPx = with(density) { 38.dp.toPx() }
-    val latestMemos by rememberUpdatedState(memos)
-    val latestDraggingId by rememberUpdatedState(draggingId)
-    val latestDraggedCardBounds by rememberUpdatedState(draggedCardBounds)
-    val latestDragOffset by rememberUpdatedState(dragOffset)
-    val latestPageBounds by rememberUpdatedState(pageBounds)
-    val latestGridBounds by rememberUpdatedState(gridBounds)
-    val latestOnDragStart by rememberUpdatedState(onDragStart)
-    val latestOnDrag by rememberUpdatedState(onDrag)
-    val latestOnAutoScrollTick by rememberUpdatedState(onAutoScrollTick)
-    val latestOnDragEnd by rememberUpdatedState(onDragEnd)
-    val latestOnDragCancel by rememberUpdatedState(onDragCancel)
+    HomeMemoCarouselPage(
+        memos = memos,
+        memoCardBounds = memoCardBounds,
+        sparklingMemoIds = sparklingMemoIds,
+        onOpenMemo = onOpenMemo,
+        onToggleFavorite = onToggleFavorite,
+        onAddMemo = onAddMemo,
+        onControlPositioned = onControlPositioned
+    )
+}
 
-    LaunchedEffect(draggingId) {
-        if (draggingId == null) return@LaunchedEffect
-        while (latestDraggingId != null) {
-            val bounds = latestGridBounds
-            val draggedBounds = latestDraggedCardBounds
-            if (bounds != null) {
-                val effectiveBottom = (bounds.bottom - controlHeightPx - 8f).coerceAtLeast(bounds.top)
-                val visualTop = (draggedBounds?.top ?: Float.POSITIVE_INFINITY) + latestDragOffset.y
-                val visualBottom = (draggedBounds?.bottom ?: Float.NEGATIVE_INFINITY) + latestDragOffset.y
-                val visualCenterX = (draggedBounds?.center?.x ?: Float.NEGATIVE_INFINITY) + latestDragOffset.x
-                val inLeftColumn = visualCenterX >= bounds.left - 48f && visualCenterX <= bounds.right + 48f
-                val movingUp = latestDragOffset.y <= -autoScrollDragThresholdPx
-                val movingDown = latestDragOffset.y >= autoScrollDragThresholdPx
-                val scrollAmount = if (draggedBounds != null && inLeftColumn) {
-                    when {
-                        movingUp && visualTop <= bounds.top - autoScrollEdgePx && gridState.canScrollBackward -> -autoScrollStepPx
-                        movingDown && visualBottom >= effectiveBottom + autoScrollEdgePx && gridState.canScrollForward -> autoScrollStepPx
-                        else -> 0f
-                    }
-                } else {
-                    0f
-                }
-                if (scrollAmount != 0f) {
-                    gridState.scrollBy(scrollAmount)
-                    withFrameNanos { }
-                    latestOnAutoScrollTick()
-                }
-            }
-            delay(45)
+@Composable
+private fun HomeMemoCarouselPage(
+    memos: List<ShoppingMemo>,
+    memoCardBounds: MutableMap<String, Rect>,
+    sparklingMemoIds: List<String>,
+    onOpenMemo: (ShoppingMemo) -> Unit,
+    onToggleFavorite: (ShoppingMemo) -> Unit,
+    onAddMemo: () -> Unit,
+    onControlPositioned: (Rect) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val carouselOffset = remember { Animatable(0f) }
+    val count = memos.size
+    val latestCount by rememberUpdatedState(count)
+
+    LaunchedEffect(count) {
+        if (count == 0) {
+            carouselOffset.snapTo(0f)
+        } else {
+            carouselOffset.snapTo(carouselOffset.value.coerceIn(-count.toFloat(), count.toFloat()))
         }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .padding(10.dp)
-            .onGloballyPositioned { pageBounds = it.boundsInWindow() }
-            .pointerInput(Unit) {
-                var activeCardDrag = false
-                detectDragGesturesAfterLongPress(
-                    onDragStart = { start ->
-                        activeCardDrag = false
-                        if (latestDraggingId != null) return@detectDragGesturesAfterLongPress
-                        val hostBounds = latestPageBounds ?: return@detectDragGesturesAfterLongPress
-                        val windowPoint = Offset(
-                            x = hostBounds.left + start.x,
-                            y = hostBounds.top + start.y
-                        )
-                        val memo = latestMemos.firstOrNull { memo ->
-                            memoCardBounds[memo.id]?.contains(windowPoint) == true
-                        } ?: return@detectDragGesturesAfterLongPress
-                        val cardBounds = memoCardBounds[memo.id] ?: return@detectDragGesturesAfterLongPress
-                        latestOnDragStart(
-                            memo,
-                            Offset(windowPoint.x - cardBounds.left, windowPoint.y - cardBounds.top),
-                            cardBounds
-                        )
-                        activeCardDrag = true
+            .background(Color.White)
+            .pointerInput(count) {
+                if (count <= 1) return@pointerInput
+                detectDragGestures(
+                    onDragStart = {
+                        scope.launch { carouselOffset.stop() }
                     },
                     onDrag = { change, amount ->
-                        if (activeCardDrag) {
-                            change.consume()
-                            latestOnDrag(amount)
+                        change.consume()
+                        val dominantDelta = amount.x + amount.y * 0.35f
+                        val step = (dominantDelta / 150f).coerceIn(-0.9f, 0.9f)
+                        scope.launch {
+                            carouselOffset.snapTo(carouselOffset.value + step)
                         }
                     },
                     onDragEnd = {
-                        if (activeCardDrag) {
-                            latestOnDragEnd()
-                            activeCardDrag = false
+                        scope.launch {
+                            val target = carouselOffset.value.roundToInt().toFloat()
+                            carouselOffset.animateTo(
+                                targetValue = target,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                )
+                            )
                         }
                     },
                     onDragCancel = {
-                        if (activeCardDrag) {
-                            latestOnDragCancel()
-                            activeCardDrag = false
+                        scope.launch {
+                            carouselOffset.animateTo(
+                                targetValue = carouselOffset.value.roundToInt().toFloat(),
+                                animationSpec = spring(stiffness = Spring.StiffnessMedium)
+                            )
                         }
                     }
                 )
             }
     ) {
-        Row(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .zIndex(if (draggingId != null) 10f else 0f)
-                .fillMaxHeight()
-                .padding(end = 6.dp)
-        ) {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(1),
-                state = gridState,
+        val cardWidth = (maxWidth * 0.47f).coerceIn(112.dp, 172.dp)
+        val cardHeight = (cardWidth * 1.18f).coerceIn(150.dp, 230.dp)
+        val orbitCenterX = maxWidth * 0.94f
+        val orbitCenterY = maxHeight * 0.92f
+        val radiusX = maxWidth * 0.68f
+        val radiusY = maxHeight * 0.42f
+        val frontAngle = -2.25f
+        val snappedOffset = carouselOffset.value.roundToInt()
+        val frontIndex = if (count == 0) 0 else floorModIndex(-snappedOffset, count)
+        val fractionalOffset = carouselOffset.value - snappedOffset
+
+        if (count == 0) {
+            Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .onGloballyPositioned { gridBounds = it.boundsInWindow() },
-                contentPadding = PaddingValues(bottom = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                userScrollEnabled = draggingId == null
+                    .align(Alignment.Center)
+                    .width(cardWidth),
             ) {
-                items(memos, key = { it.id }) { memo ->
-                    var cardBounds by remember { mutableStateOf<Rect?>(null) }
-                    val isDragging = draggingId == memo.id
-                    MemoCard(
-                        memo = memo,
-                        sparkling = sparklingMemoIds.contains(memo.id),
-                        modifier = (if (isDragging) Modifier else Modifier.animateItem())
+                AddMemoCard(compact = true, onClick = onAddMemo)
+            }
+        } else {
+            memos.forEachIndexed { index, memo ->
+                val relative = circularRelativeIndex(
+                    index = index,
+                    frontIndex = frontIndex,
+                    fractionalOffset = fractionalOffset,
+                    count = count
+                )
+                val absRelative = kotlin.math.abs(relative)
+                val visible = count <= 6 || absRelative <= 2.6f
+                if (visible) {
+                    val stepAngle = 0.78f
+                    val angle = frontAngle + relative * stepAngle
+                    val sin = kotlin.math.sin(angle.toDouble()).toFloat()
+                    val cos = kotlin.math.cos(angle.toDouble()).toFloat()
+                    val x = orbitCenterX + radiusX * cos - cardWidth / 2f
+                    val y = orbitCenterY + radiusY * sin - cardHeight / 2f
+                    val scale = (1.08f - absRelative * 0.11f).coerceIn(0.72f, 1.08f)
+                    val alpha = (1f - (absRelative - 2.5f).coerceAtLeast(0f) * 0.25f).coerceIn(0.35f, 1f)
+                    val isFront = absRelative < 0.45f
+
+                    Box(
+                        modifier = Modifier
+                            .offset(x = x, y = y)
+                            .width(cardWidth)
+                            .heightIn(min = cardHeight)
                             .graphicsLayer {
-                                translationX = 0f
-                                translationY = 0f
-                                scaleX = 1f
-                                scaleY = 1f
-                                shadowElevation = 0f
-                                alpha = if (isDragging) 0f else 1f
+                                scaleX = scale
+                                scaleY = scale
+                                this.alpha = alpha
+                                shadowElevation = if (isFront) 24f else 8f
                             }
-                            .zIndex(0f)
-                            .onGloballyPositioned {
-                                val bounds = it.boundsInWindow()
-                                cardBounds = bounds
-                                memoCardBounds[memo.id] = bounds
+                            .zIndex(100f - absRelative)
+                            .then(
+                                if (isFront) {
+                                    Modifier
+                                        .border(4.dp, Color(0xFFFFEA00), RoundedCornerShape(14.dp))
+                                        .padding(4.dp)
+                                } else {
+                                    Modifier
+                                }
+                            )
+                    ) {
+                        MemoCard(
+                            memo = memo,
+                            sparkling = sparklingMemoIds.contains(memo.id),
+                            modifier = Modifier
+                                .width(cardWidth)
+                                .onGloballyPositioned {
+                                    memoCardBounds[memo.id] = it.boundsInWindow()
+                                },
+                            onClick = {
+                                val selectedNow = latestCount == 0 ||
+                                    floorModIndex(-carouselOffset.value.roundToInt(), latestCount.coerceAtLeast(1)) == index
+                                if (selectedNow) {
+                                    onOpenMemo(memo)
+                                } else {
+                                    scope.launch {
+                                        val current = carouselOffset.value.roundToInt()
+                                        val delta = shortestCarouselDelta(index, floorModIndex(-current, count), count)
+                                        carouselOffset.animateTo(
+                                            targetValue = (current - delta).toFloat(),
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                stiffness = Spring.StiffnessMediumLow
+                                            )
+                                        )
+                                    }
+                                }
                             },
-                        onClick = { if (draggingId == null) onOpenMemo(memo) },
-                        onToggleFavorite = { onToggleFavorite(memo) }
-                    )
+                            onToggleFavorite = { onToggleFavorite(memo) }
+                        )
+                    }
                 }
             }
         }
-        if (showCardDropTargets) {
-            HomeCardDropTargets(
+
+        if (count > 0) {
+            Box(
                 modifier = Modifier
-                    .padding(start = 6.dp)
-                    .weight(1f)
-                    .fillMaxHeight(),
-                imageTargetActive = imageTargetActive,
-                trashTargetActive = trashTargetActive,
-                bottomInset = if (oneHandOffset > 0.dp) oneHandOffset else controlHeight,
-                onImageTargetPositioned = onImageTargetPositioned,
-                onTrashTargetPositioned = onTrashTargetPositioned
-            )
-        } else {
-            TemporaryMemoPanel(
-                memo = temporaryMemo,
-                draggingEntryId = draggingTemporaryEntryId,
-                modifier = Modifier
-                    .padding(start = 6.dp)
-                    .weight(1f)
-                    .fillMaxHeight(),
-                onOpen = onOpenTemporaryMemo,
-                onListPositioned = onTemporaryListPositioned,
-                onDragStart = onTemporaryDragStart,
-                onDrag = onTemporaryDrag,
-                onDragEnd = onTemporaryDragEnd,
-                onDragCancel = onTemporaryDragCancel
-            )
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp)
+                    .width((maxWidth * 0.34f).coerceIn(104.dp, 150.dp))
+                    .zIndex(200f)
+                    .onGloballyPositioned { onControlPositioned(it.boundsInWindow()) }
+            ) {
+                AddMemoCard(compact = true, onClick = onAddMemo)
+            }
         }
-        }
-        HomeLeftControlBoundary(
-            modifier = Modifier
-                .matchParentSize()
-                .zIndex(30f),
-            controlHeight = controlHeight
-        )
-        HomeLeftBottomControls(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .fillMaxWidth(0.5f)
-                .height(controlHeight)
-                .zIndex(25f),
-            onAddMemo = onAddMemo,
-            onPositioned = onControlPositioned,
-            onScrollGestureStart = onControlScrollGestureStart,
-            onScroll = onControlScroll
-        )
     }
+}
+
+private fun floorModIndex(value: Int, size: Int): Int {
+    if (size <= 0) return 0
+    val mod = value % size
+    return if (mod < 0) mod + size else mod
+}
+
+private fun circularRelativeIndex(
+    index: Int,
+    frontIndex: Int,
+    fractionalOffset: Float,
+    count: Int
+): Float {
+    if (count <= 0) return 0f
+    var value = index - frontIndex + fractionalOffset
+    val half = count / 2f
+    while (value > half) value -= count
+    while (value < -half) value += count
+    return value
+}
+
+private fun shortestCarouselDelta(targetIndex: Int, currentIndex: Int, count: Int): Int {
+    if (count <= 0) return 0
+    var delta = targetIndex - currentIndex
+    val half = count / 2
+    while (delta > half) delta -= count
+    while (delta < -half) delta += count
+    return delta
 }
 
 @Composable
