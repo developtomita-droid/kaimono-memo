@@ -20,6 +20,7 @@ private const val PREF_MIC_COMMAND_PREFIX = "mic_command_"
 private const val PREF_HOME_TITLE_PATTERN = "home_title_pattern"
 private const val PREF_TEMPORARY_TITLE_PATTERN = "temporary_title_pattern"
 private const val PREF_SUPPORT_AD_WATCH_DATE = "support_ad_watch_date"
+private const val PREF_EDIT_HELP_VISIBLE = "edit_help_visible"
 private const val TITLE_PATTERN_COUNT = 15
 
 data class MicrophoneSettings(
@@ -207,6 +208,18 @@ fun saveSupportAdWatchDate(context: Context, date: String) {
     context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(PREF_SUPPORT_AD_WATCH_DATE, date)
+        .apply()
+}
+
+fun loadEditHelpVisible(context: Context): Boolean {
+    return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_EDIT_HELP_VISIBLE, true)
+}
+
+fun saveEditHelpVisible(context: Context, visible: Boolean) {
+    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_EDIT_HELP_VISIBLE, visible)
         .apply()
 }
 
