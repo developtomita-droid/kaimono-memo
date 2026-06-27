@@ -898,6 +898,13 @@ private fun AdvancedHomeScreen(
         }
     }
 
+    LaunchedEffect(draggingId) {
+        if (draggingId != null) {
+            homeSpeechController.stop()
+            stopHomeVoiceScroll()
+        }
+    }
+
     LaunchedEffect(homeVoiceScrollSerial, homeVoiceScrollDirection) {
         val direction = homeVoiceScrollDirection
         if (direction == 0) return@LaunchedEffect
@@ -980,19 +987,14 @@ private fun AdvancedHomeScreen(
 
     fun finishHomeMemoDrag() {
         val memo = memos.firstOrNull { it.id == draggingId }
-        val revealTopAfterDrop = memo != null && homeMemoOrderChanged && homeMemoOrderIds.firstOrNull() == memo.id
         when {
             memo != null && imageChangeBounds?.contains(dragPoint) == true -> pendingImageMemo = memo
             memo != null && cardTrashBounds?.contains(dragPoint) == true -> onDeleteMemo(memo)
-            memo != null && homeMemoOrderChanged -> onApplyMemoOrder(homeMemoOrderIds.toList())
         }
         draggingId = null
         dragOffset = Offset.Zero
         draggedCardBounds = null
         homeMemoOrderChanged = false
-        if (revealTopAfterDrop) {
-            scope.launch { activeGridState.scrollToItem(0, 0) }
-        }
     }
 
     fun startOneHandFling(initialVelocityY: Float) {
@@ -1150,11 +1152,6 @@ private fun AdvancedHomeScreen(
                 pattern = titlePattern,
                 onClick = onTitlePatternClick
             )
-            HomeTabRow(
-                tabs = tabs,
-                selectedPage = pagerState.currentPage,
-                onSelect = { page -> scope.launch { pagerState.animateScrollToPage(page) } }
-            )
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.weight(1f),
@@ -1183,9 +1180,8 @@ private fun AdvancedHomeScreen(
                         onDrag = { amount ->
                             dragOffset += amount
                             dragPoint += amount
-                            updateHomeMemoOrderDuringDrag()
                         },
-                        onAutoScrollTick = { updateHomeMemoOrderDuringDrag() },
+                        onAutoScrollTick = {},
                         onDragEnd = { finishHomeMemoDrag() },
                         onDragCancel = {
                             draggingId = null
@@ -1196,6 +1192,7 @@ private fun AdvancedHomeScreen(
                         onOpenMemo = onOpenMemo,
                         onToggleFavorite = onToggleFavorite,
                         onAddMemo = onAddMemo,
+                        onShowTrash = { scope.launch { pagerState.animateScrollToPage(1) } },
                         oneHandOffset = oneHandOffsetDp,
                         showCardDropTargets = draggingId != null,
                         imageTargetActive = imageChangeBounds?.contains(dragPoint) == true,
@@ -1236,7 +1233,7 @@ private fun AdvancedHomeScreen(
             }
         }
 
-        if (microphoneEnabled) {
+        if (microphoneEnabled && draggingId == null) {
             MicFab(
                 controller = homeSpeechController,
                 modifier = Modifier
@@ -1276,7 +1273,7 @@ private fun AdvancedHomeScreen(
                     }
                     .width(with(density) { draggedBounds.width.toDp() })
                     .height(with(density) { draggedBounds.height.toDp() })
-                    .zIndex(60f),
+                    .zIndex(320f),
                 onClick = {},
                 onToggleFavorite = {}
             )
@@ -1385,6 +1382,7 @@ private fun HomeItemsPage(
     onOpenMemo: (ShoppingMemo) -> Unit,
     onToggleFavorite: (ShoppingMemo) -> Unit,
     onAddMemo: () -> Unit,
+    onShowTrash: () -> Unit,
     oneHandOffset: Dp,
     showCardDropTargets: Boolean,
     imageTargetActive: Boolean,
@@ -1408,9 +1406,21 @@ private fun HomeItemsPage(
         sparklingMemoIds = sparklingMemoIds,
         selectedMemoId = selectedMemoId,
         onSelectedMemoChanged = onSelectedMemoChanged,
+        draggingId = draggingId,
+        dragPoint = dragPoint,
+        onDragStart = onDragStart,
+        onDrag = onDrag,
+        onDragEnd = onDragEnd,
+        onDragCancel = onDragCancel,
         onOpenMemo = onOpenMemo,
         onToggleFavorite = onToggleFavorite,
         onAddMemo = onAddMemo,
+        onShowTrash = onShowTrash,
+        showCardDropTargets = showCardDropTargets,
+        imageTargetActive = imageTargetActive,
+        trashTargetActive = trashTargetActive,
+        onImageTargetPositioned = onImageTargetPositioned,
+        onTrashTargetPositioned = onTrashTargetPositioned,
         onControlPositioned = onControlPositioned
     )
 }
@@ -1422,19 +1432,38 @@ private fun HomeMemoCarouselPage(
     sparklingMemoIds: List<String>,
     selectedMemoId: String?,
     onSelectedMemoChanged: (String?) -> Unit,
+    draggingId: String?,
+    dragPoint: Offset,
+    onDragStart: (ShoppingMemo, Offset, Rect?) -> Unit,
+    onDrag: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
     onOpenMemo: (ShoppingMemo) -> Unit,
     onToggleFavorite: (ShoppingMemo) -> Unit,
     onAddMemo: () -> Unit,
+    onShowTrash: () -> Unit,
+    showCardDropTargets: Boolean,
+    imageTargetActive: Boolean,
+    trashTargetActive: Boolean,
+    onImageTargetPositioned: (Rect) -> Unit,
+    onTrashTargetPositioned: (Rect) -> Unit,
     onControlPositioned: (Rect) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val carouselOffset = remember { Animatable(0f) }
     val count = memos.size
     val latestCount by rememberUpdatedState(count)
-    val memoIds = remember(memos) { memos.map { it.id } }
+    val memoIdKey = memos.joinToString(separator = "|") { it.id }
+    val memoIds = remember(memoIdKey) { memos.map { it.id } }
     var carouselDragging by remember { mutableStateOf(false) }
 
-    LaunchedEffect(memoIds, selectedMemoId) {
+    fun selectedMemoIdForOffset(offset: Float): String? {
+        if (count <= 0) return null
+        return memos.getOrNull(floorModIndex(-offset.roundToInt(), count))?.id
+    }
+
+    LaunchedEffect(memoIdKey, selectedMemoId) {
+        if (carouselDragging) return@LaunchedEffect
         if (count == 0) {
             carouselOffset.snapTo(0f)
         } else {
@@ -1451,8 +1480,8 @@ private fun HomeMemoCarouselPage(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.White)
-            .pointerInput(count) {
-                if (count <= 1) return@pointerInput
+            .pointerInput(count, draggingId) {
+                if (count <= 1 || draggingId != null) return@pointerInput
                 detectDragGestures(
                     onDragStart = {
                         carouselDragging = true
@@ -1477,6 +1506,7 @@ private fun HomeMemoCarouselPage(
                                 )
                             )
                             carouselDragging = false
+                            selectedMemoIdForOffset(target)?.let(onSelectedMemoChanged)
                         }
                     },
                     onDragCancel = {
@@ -1503,12 +1533,6 @@ private fun HomeMemoCarouselPage(
         val fractionalOffset = carouselOffset.value - snappedOffset
         val isCarouselSettled = count > 0 && !carouselDragging && kotlin.math.abs(fractionalOffset) < 0.03f
         val settledSelectedMemo = if (isCarouselSettled) memos.getOrNull(frontIndex) else null
-
-        LaunchedEffect(settledSelectedMemo?.id) {
-            if (settledSelectedMemo != null) {
-                onSelectedMemoChanged(settledSelectedMemo.id)
-            }
-        }
 
         settledSelectedMemo?.let { memo ->
             HomeSelectedMemoBackdrop(
@@ -1547,18 +1571,52 @@ private fun HomeMemoCarouselPage(
                     val scale = (1.08f - absRelative * 0.11f).coerceIn(0.72f, 1.08f)
                     val alpha = (1f - (absRelative - 2.5f).coerceAtLeast(0f) * 0.25f).coerceIn(0.35f, 1f)
                     val isFront = absRelative < 0.45f
+                    var cardBounds by remember(memo.id) { mutableStateOf<Rect?>(null) }
+                    val isDraggingMemo = draggingId == memo.id
 
                     Box(
                         modifier = Modifier
                             .offset(x = x, y = y)
                             .width(cardWidth)
+                            .onGloballyPositioned {
+                                val bounds = it.boundsInWindow()
+                                cardBounds = bounds
+                                memoCardBounds[memo.id] = bounds
+                            }
                             .graphicsLayer {
                                 scaleX = scale
                                 scaleY = scale
-                                this.alpha = alpha
+                                this.alpha = if (isDraggingMemo) alpha * 0.22f else alpha
                                 shadowElevation = if (isFront) 24f else 8f
                             }
                             .zIndex(100f - absRelative)
+                            .then(
+                                if (isFront) {
+                                    Modifier.pointerInput(memo.id, isFront) {
+                                        detectDragGesturesAfterLongPress(
+                                            onDragStart = { start ->
+                                                carouselDragging = true
+                                                onSelectedMemoChanged(memo.id)
+                                                onDragStart(memo, start, cardBounds)
+                                            },
+                                            onDrag = { change, amount ->
+                                                change.consume()
+                                                onDrag(amount)
+                                            },
+                                            onDragEnd = {
+                                                carouselDragging = false
+                                                onDragEnd()
+                                            },
+                                            onDragCancel = {
+                                                carouselDragging = false
+                                                onDragCancel()
+                                            }
+                                        )
+                                    }
+                                } else {
+                                    Modifier
+                                }
+                            )
                             .then(
                                 if (isFront) {
                                     Modifier
@@ -1574,9 +1632,7 @@ private fun HomeMemoCarouselPage(
                             sparkling = sparklingMemoIds.contains(memo.id),
                             modifier = Modifier
                                 .width(cardWidth)
-                                .onGloballyPositioned {
-                                    memoCardBounds[memo.id] = it.boundsInWindow()
-                                },
+                                ,
                             onClick = {
                                 val selectedNow = latestCount == 0 ||
                                     floorModIndex(-carouselOffset.value.roundToInt(), latestCount.coerceAtLeast(1)) == index
@@ -1593,6 +1649,7 @@ private fun HomeMemoCarouselPage(
                                                 stiffness = Spring.StiffnessMediumLow
                                             )
                                         )
+                                        onSelectedMemoChanged(memo.id)
                                     }
                                 }
                             },
@@ -1603,15 +1660,38 @@ private fun HomeMemoCarouselPage(
             }
         }
 
+        if (showCardDropTargets && count > 0) {
+            val dropTargetHeight = ((maxWidth - 20.dp) / 2f).coerceAtLeast(120.dp)
+            HomeCarouselDropTargets(
+                imageTargetActive = imageTargetActive,
+                trashTargetActive = trashTargetActive,
+                onImageTargetPositioned = onImageTargetPositioned,
+                onTrashTargetPositioned = onTrashTargetPositioned,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 10.dp, end = 10.dp, bottom = 10.dp)
+                    .fillMaxWidth()
+                    .height(dropTargetHeight)
+                    .zIndex(260f)
+            )
+        }
+
         if (count > 0) {
-            Box(
+            val controlWidth = (maxWidth * 0.34f).coerceIn(104.dp, 150.dp)
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(12.dp)
-                    .width((maxWidth * 0.34f).coerceIn(104.dp, 150.dp))
+                    .width(controlWidth)
                     .zIndex(200f)
-                    .onGloballyPositioned { onControlPositioned(it.boundsInWindow()) }
+                    .onGloballyPositioned { onControlPositioned(it.boundsInWindow()) },
+                horizontalAlignment = Alignment.End
             ) {
+                HomeTrashDisplayButton(
+                    onClick = onShowTrash,
+                    modifier = Modifier.size(86.dp)
+                )
+                Spacer(Modifier.height(10.dp))
                 AddMemoCard(compact = true, onClick = onAddMemo)
             }
         }
@@ -1628,7 +1708,7 @@ private fun HomeSelectedMemoBackdrop(
     val totalCount = activeCount + doneCount
     val progress = if (totalCount == 0) 0f else doneCount.toFloat() / totalCount.toFloat()
     val percent = (progress * 100f).roundToInt()
-    val displayEntries = memo.entries.filter { it.name.isNotBlank() }.take(9)
+    val displayEntries = memo.entries.filter { it.name.isNotBlank() }.take(12)
 
     Column(
         modifier = modifier
@@ -1638,8 +1718,8 @@ private fun HomeSelectedMemoBackdrop(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(76.dp)
-                .padding(horizontal = 18.dp),
+                .height(0.dp)
+                .padding(horizontal = 0.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -1657,13 +1737,12 @@ private fun HomeSelectedMemoBackdrop(
                 modifier = Modifier.size(52.dp)
             )
         }
-        Divider(color = Color(0xFFE0E0E0))
+        Spacer(Modifier.height(0.dp))
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(54.dp)
+                .height(44.dp)
                 .background(Color.Black)
-                .padding(vertical = 4.dp)
         ) {
             Box(
                 modifier = Modifier
@@ -1674,7 +1753,7 @@ private fun HomeSelectedMemoBackdrop(
             Text(
                 text = "$percent %",
                 color = Color.White,
-                fontSize = 26.sp,
+                fontSize = 22.sp,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.align(Alignment.Center)
@@ -1716,31 +1795,31 @@ private fun HomeSelectedMemoBackdropRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 74.dp)
+            .heightIn(min = 56.dp)
             .background(rowBackground)
-            .padding(horizontal = 22.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(42.dp)
+                .size(36.dp)
                 .background(Color(0xFFE3F2FD), CircleShape),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = "${index + 1}",
                 color = Color(0xFF1976D2),
-                fontSize = 18.sp,
+                fontSize = 16.sp,
                 fontWeight = FontWeight.Bold
             )
         }
-        Spacer(Modifier.width(18.dp))
+        Spacer(Modifier.width(12.dp))
         Text(
             text = entry.name,
             color = if (entry.checked) Color(0xFF777777) else Color.Black,
-            fontSize = 24.sp,
-            lineHeight = 30.sp,
-            fontWeight = FontWeight.Bold,
+            fontSize = 20.sp,
+            lineHeight = 25.sp,
+            fontWeight = FontWeight.Normal,
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
             textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None,
@@ -1777,6 +1856,70 @@ private fun shortestCarouselDelta(targetIndex: Int, currentIndex: Int, count: In
     while (delta > half) delta -= count
     while (delta < -half) delta += count
     return delta
+}
+
+@Composable
+private fun HomeCarouselDropTargets(
+    imageTargetActive: Boolean,
+    trashTargetActive: Boolean,
+    onImageTargetPositioned: (Rect) -> Unit,
+    onTrashTargetPositioned: (Rect) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(0.dp)
+    ) {
+        HomeCarouselDropTargetCard(
+            icon = "\u753B\u50CF",
+            containerColor = Color(0xFFE3F2FD),
+            contentColor = Color(0xFF1565C0),
+            active = imageTargetActive,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .onGloballyPositioned { onImageTargetPositioned(it.boundsInWindow()) }
+        )
+        HomeCarouselDropTargetCard(
+            icon = "\uD83D\uDDD1",
+            containerColor = Color(0xFFFFEBEE),
+            contentColor = Color(0xFFD32F2F),
+            active = trashTargetActive,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .onGloballyPositioned { onTrashTargetPositioned(it.boundsInWindow()) }
+        )
+    }
+}
+
+@Composable
+private fun HomeCarouselDropTargetCard(
+    icon: String,
+    containerColor: Color,
+    contentColor: Color,
+    active: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.sparkleOverlay(rememberSparkleAlpha(active)),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(if (active) 4.dp else 2.dp, contentColor.copy(alpha = if (active) 0.95f else 0.38f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (active) 14.dp else 7.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = icon,
+                color = contentColor,
+                fontSize = if (icon == "\uD83D\uDDD1") 42.sp else 28.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
 }
 
 @Composable
@@ -2657,6 +2800,31 @@ private fun AddMemoCard(compact: Boolean, onClick: () -> Unit) {
     }
 }
 
+@Composable
+private fun HomeTrashDisplayButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+        border = BorderStroke(1.dp, Color(0xFF90CAF9)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F2FD))
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                text = "\u30B4\u30DF\u7BB1\n\u8868\u793A",
+                color = Color(0xFF1976D2),
+                fontSize = 19.sp,
+                lineHeight = 23.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
 private data class ShoppingImagePattern(
     val name: String,
     val symbol: String,
@@ -2943,45 +3111,16 @@ private fun titlePatternResId(pattern: Int): Int {
 @Composable
 private fun TitlePatternImage(
     pattern: Int,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.FillWidth
 ) {
     val image = ImageBitmap.imageResource(titlePatternResId(pattern))
-    Canvas(modifier = modifier) {
-        val sourceWidth = image.width
-        val sourceHeight = image.height
-        val destinationWidth = size.width.roundToInt().coerceAtLeast(1)
-        val destinationHeight = size.height.roundToInt().coerceAtLeast(1)
-        val sourceCapWidth = (sourceWidth * 0.28f)
-            .roundToInt()
-            .coerceIn(1, (sourceWidth - 2) / 2)
-        val destinationCapWidth = sourceCapWidth
-            .coerceAtMost((destinationWidth - 2).coerceAtLeast(2) / 2)
-            .coerceAtLeast(1)
-        val sourceCenterWidth = (sourceWidth - sourceCapWidth * 2).coerceAtLeast(1)
-        val destinationCenterWidth = (destinationWidth - destinationCapWidth * 2).coerceAtLeast(1)
-
-        drawImage(
-            image = image,
-            srcOffset = IntOffset(0, 0),
-            srcSize = IntSize(sourceCapWidth, sourceHeight),
-            dstOffset = IntOffset(0, 0),
-            dstSize = IntSize(destinationCapWidth, destinationHeight)
-        )
-        drawImage(
-            image = image,
-            srcOffset = IntOffset(sourceCapWidth, 0),
-            srcSize = IntSize(sourceCenterWidth, sourceHeight),
-            dstOffset = IntOffset(destinationCapWidth, 0),
-            dstSize = IntSize(destinationCenterWidth, destinationHeight)
-        )
-        drawImage(
-            image = image,
-            srcOffset = IntOffset(sourceWidth - sourceCapWidth, 0),
-            srcSize = IntSize(sourceCapWidth, sourceHeight),
-            dstOffset = IntOffset(destinationCapWidth + destinationCenterWidth, 0),
-            dstSize = IntSize(destinationCapWidth, destinationHeight)
-        )
-    }
+    Image(
+        bitmap = image,
+        contentDescription = null,
+        contentScale = contentScale,
+        modifier = modifier
+    )
 }
 
 @Composable
@@ -2994,22 +3133,17 @@ private fun TitlePatternHeader(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .statusBarsPadding()
             .background(Color.White)
             .clickable(onClick = onClick)
     ) {
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 92.dp)
+                .height(52.dp)
         ) {
-            val bannerMaxWidth = maxWidth - 24.dp
             Box(
                 modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-                    .widthIn(min = 300.dp, max = bannerMaxWidth)
-                    .height(84.dp)
+                    .fillMaxSize()
             ) {
                 TitlePatternImage(
                     pattern = pattern,
@@ -3018,14 +3152,14 @@ private fun TitlePatternHeader(
                 Text(
                     text = title,
                     color = Color(0xFF3E2D22),
-                    fontSize = 34.sp,
-                    lineHeight = 39.sp,
+                    fontSize = 25.sp,
+                    lineHeight = 29.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .align(Alignment.Center)
-                        .padding(horizontal = 68.dp)
+                        .padding(horizontal = 56.dp)
                 )
             }
             trailingContent?.invoke(this)
@@ -3148,7 +3282,8 @@ private fun TitlePatternPickerScreen(
                     Box(Modifier.fillMaxSize()) {
                         TitlePatternImage(
                             pattern = index,
-                            modifier = Modifier.matchParentSize()
+                            modifier = Modifier.matchParentSize(),
+                            contentScale = ContentScale.Fit
                         )
                         Text(
                             text = "買い物メモ",
