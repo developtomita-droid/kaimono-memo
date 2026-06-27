@@ -407,6 +407,7 @@ fun ShoppingMemoApp() {
     }
     var currentScreen by remember { mutableStateOf(Screen.Home) }
     var selectedMemoId by remember { mutableStateOf<String?>(null) }
+    var homeCarouselSelectedMemoId by remember { mutableStateOf<String?>(null) }
     var imageEditingMemoId by remember { mutableStateOf<String?>(null) }
     var titlePatternTarget by remember { mutableStateOf<TitlePatternTarget?>(null) }
     var titlePatternReturnScreen by remember { mutableStateOf(Screen.Home) }
@@ -491,6 +492,9 @@ fun ShoppingMemoApp() {
     }
     fun openMemo(memo: ShoppingMemo) {
         selectedMemoId = memo.id
+        if (!isTemporaryMemo(memo)) {
+            homeCarouselSelectedMemoId = memo.id
+        }
         currentScreen = Screen.Detail
     }
     fun finishDetail() {
@@ -594,6 +598,8 @@ fun ShoppingMemoApp() {
                             microphoneSettings = microphoneSettings,
                             homeTopScrollRequest = homeTopScrollRequest,
                             titlePattern = homeTitlePattern,
+                            homeCarouselSelectedMemoId = homeCarouselSelectedMemoId,
+                            onHomeCarouselSelected = { homeCarouselSelectedMemoId = it },
                             onTitlePatternClick = { openTitlePatternPicker(TitlePatternTarget.Home) },
                             onAddMemo = ::addMemo,
                             onOpenMemo = ::openMemo,
@@ -727,6 +733,8 @@ private fun AdvancedHomeScreen(
     microphoneSettings: MicrophoneSettings,
     homeTopScrollRequest: Int,
     titlePattern: Int,
+    homeCarouselSelectedMemoId: String?,
+    onHomeCarouselSelected: (String?) -> Unit,
     onTitlePatternClick: () -> Unit,
     onAddMemo: () -> Unit,
     onOpenMemo: (ShoppingMemo) -> Unit,
@@ -1159,6 +1167,8 @@ private fun AdvancedHomeScreen(
                         gridState = activeGridState,
                         memoCardBounds = memoCardBounds,
                         sparklingMemoIds = sparklingMemoIds,
+                        selectedMemoId = homeCarouselSelectedMemoId,
+                        onSelectedMemoChanged = onHomeCarouselSelected,
                         draggingId = draggingId,
                         draggedCardBounds = draggedCardBounds,
                         dragPoint = dragPoint,
@@ -1361,6 +1371,8 @@ private fun HomeItemsPage(
     gridState: LazyGridState,
     memoCardBounds: MutableMap<String, Rect>,
     sparklingMemoIds: List<String>,
+    selectedMemoId: String?,
+    onSelectedMemoChanged: (String?) -> Unit,
     draggingId: String?,
     draggedCardBounds: Rect?,
     dragPoint: Offset,
@@ -1394,6 +1406,8 @@ private fun HomeItemsPage(
         memos = memos,
         memoCardBounds = memoCardBounds,
         sparklingMemoIds = sparklingMemoIds,
+        selectedMemoId = selectedMemoId,
+        onSelectedMemoChanged = onSelectedMemoChanged,
         onOpenMemo = onOpenMemo,
         onToggleFavorite = onToggleFavorite,
         onAddMemo = onAddMemo,
@@ -1406,6 +1420,8 @@ private fun HomeMemoCarouselPage(
     memos: List<ShoppingMemo>,
     memoCardBounds: MutableMap<String, Rect>,
     sparklingMemoIds: List<String>,
+    selectedMemoId: String?,
+    onSelectedMemoChanged: (String?) -> Unit,
     onOpenMemo: (ShoppingMemo) -> Unit,
     onToggleFavorite: (ShoppingMemo) -> Unit,
     onAddMemo: () -> Unit,
@@ -1415,12 +1431,19 @@ private fun HomeMemoCarouselPage(
     val carouselOffset = remember { Animatable(0f) }
     val count = memos.size
     val latestCount by rememberUpdatedState(count)
+    val memoIds = remember(memos) { memos.map { it.id } }
+    var carouselDragging by remember { mutableStateOf(false) }
 
-    LaunchedEffect(count) {
+    LaunchedEffect(memoIds, selectedMemoId) {
         if (count == 0) {
             carouselOffset.snapTo(0f)
         } else {
-            carouselOffset.snapTo(carouselOffset.value.coerceIn(-count.toFloat(), count.toFloat()))
+            val selectedIndex = selectedMemoId?.let { memoIds.indexOf(it) } ?: -1
+            if (selectedIndex >= 0) {
+                carouselOffset.snapTo(-selectedIndex.toFloat())
+            } else {
+                carouselOffset.snapTo(carouselOffset.value.coerceIn(-count.toFloat(), count.toFloat()))
+            }
         }
     }
 
@@ -1432,6 +1455,7 @@ private fun HomeMemoCarouselPage(
                 if (count <= 1) return@pointerInput
                 detectDragGestures(
                     onDragStart = {
+                        carouselDragging = true
                         scope.launch { carouselOffset.stop() }
                     },
                     onDrag = { change, amount ->
@@ -1452,6 +1476,7 @@ private fun HomeMemoCarouselPage(
                                     stiffness = Spring.StiffnessMediumLow
                                 )
                             )
+                            carouselDragging = false
                         }
                     },
                     onDragCancel = {
@@ -1460,6 +1485,7 @@ private fun HomeMemoCarouselPage(
                                 targetValue = carouselOffset.value.roundToInt().toFloat(),
                                 animationSpec = spring(stiffness = Spring.StiffnessMedium)
                             )
+                            carouselDragging = false
                         }
                     }
                 )
@@ -1475,6 +1501,23 @@ private fun HomeMemoCarouselPage(
         val snappedOffset = carouselOffset.value.roundToInt()
         val frontIndex = if (count == 0) 0 else floorModIndex(-snappedOffset, count)
         val fractionalOffset = carouselOffset.value - snappedOffset
+        val isCarouselSettled = count > 0 && !carouselDragging && kotlin.math.abs(fractionalOffset) < 0.03f
+        val settledSelectedMemo = if (isCarouselSettled) memos.getOrNull(frontIndex) else null
+
+        LaunchedEffect(settledSelectedMemo?.id) {
+            if (settledSelectedMemo != null) {
+                onSelectedMemoChanged(settledSelectedMemo.id)
+            }
+        }
+
+        settledSelectedMemo?.let { memo ->
+            HomeSelectedMemoBackdrop(
+                memo = memo,
+                modifier = Modifier
+                    .matchParentSize()
+                    .zIndex(0f)
+            )
+        }
 
         if (count == 0) {
             Box(
@@ -1509,7 +1552,6 @@ private fun HomeMemoCarouselPage(
                         modifier = Modifier
                             .offset(x = x, y = y)
                             .width(cardWidth)
-                            .heightIn(min = cardHeight)
                             .graphicsLayer {
                                 scaleX = scale
                                 scaleY = scale
@@ -1574,6 +1616,138 @@ private fun HomeMemoCarouselPage(
             }
         }
     }
+}
+
+@Composable
+private fun HomeSelectedMemoBackdrop(
+    memo: ShoppingMemo,
+    modifier: Modifier = Modifier
+) {
+    val activeCount = memo.entries.count { !it.checked && it.name.isNotBlank() }
+    val doneCount = memo.entries.count { it.checked && it.name.isNotBlank() }
+    val totalCount = activeCount + doneCount
+    val progress = if (totalCount == 0) 0f else doneCount.toFloat() / totalCount.toFloat()
+    val percent = (progress * 100f).roundToInt()
+    val displayEntries = memo.entries.filter { it.name.isNotBlank() }.take(9)
+
+    Column(
+        modifier = modifier
+            .background(Color.White)
+            .padding(bottom = 88.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(76.dp)
+                .padding(horizontal = 18.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = memo.title.ifBlank { "タイトル入力" },
+                color = Color(0xFF212121),
+                fontSize = 28.sp,
+                lineHeight = 32.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            ShoppingPatternImage(
+                pattern = memo.imagePattern,
+                modifier = Modifier.size(52.dp)
+            )
+        }
+        Divider(color = Color(0xFFE0E0E0))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp)
+                .background(Color.Black)
+                .padding(vertical = 4.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(progress.coerceIn(0f, 1f))
+                    .background(Color(0xFF4B50D8))
+            )
+            Text(
+                text = "$percent %",
+                color = Color.White,
+                fontSize = 26.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+        if (displayEntries.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(96.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "アイテムはありません",
+                    color = Color(0xFF888888),
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        } else {
+            displayEntries.forEachIndexed { index, entry ->
+                HomeSelectedMemoBackdropRow(index = index, entry = entry)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeSelectedMemoBackdropRow(
+    index: Int,
+    entry: ShoppingEntry
+) {
+    val rowBackground = when {
+        entry.checked -> Color(0xFFE8E8E8)
+        index % 3 == 0 -> Color(0xFFEAF5FF)
+        index % 3 == 1 -> Color(0xFFFFEEEE)
+        else -> Color.White
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 74.dp)
+            .background(rowBackground)
+            .padding(horizontal = 22.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(42.dp)
+                .background(Color(0xFFE3F2FD), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "${index + 1}",
+                color = Color(0xFF1976D2),
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(Modifier.width(18.dp))
+        Text(
+            text = entry.name,
+            color = if (entry.checked) Color(0xFF777777) else Color.Black,
+            fontSize = 24.sp,
+            lineHeight = 30.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+            textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None,
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Divider(color = Color(0xFFE0E0E0))
 }
 
 private fun floorModIndex(value: Int, size: Int): Int {
