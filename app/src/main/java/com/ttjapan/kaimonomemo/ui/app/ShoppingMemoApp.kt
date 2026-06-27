@@ -1005,6 +1005,9 @@ private fun AdvancedHomeScreen(
             memo != null && imageChangeBounds?.contains(dragPoint) == true -> pendingImageMemo = memo
             memo != null && cardTrashBounds?.contains(dragPoint) == true -> onDeleteMemo(memo)
             draggedMemoId != null && swapCandidateId != null && draggedMemoId != swapCandidateId -> {
+                // 切り分け用: ドロップ時のカード順序交換を一時停止する。
+                // ここを無効化してもちらつくなら、並び確定処理ではなくプレビュー/描画側が原因。
+                /*
                 val baseOrder = validOrderOrNull(homeDragStartOrderIds)
                     ?: validOrderOrNull(homeMemoOrderIds.toList())
                     ?: sourceMemoIds
@@ -1022,6 +1025,7 @@ private fun AdvancedHomeScreen(
                     onApplyMemoOrder(homeMemoOrderIds.toList())
                     onHomeCarouselSelected(swapCandidateId)
                 }
+                */
             }
         }
         draggingId = null
@@ -1517,11 +1521,19 @@ private fun HomeMemoCarouselPage(
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val carouselOffset = remember { Animatable(0f) }
     val count = memos.size
     val latestCount by rememberUpdatedState(count)
     val memoIdKey = memos.joinToString(separator = "|") { it.id }
     val memoIds = remember(memoIdKey) { memos.map { it.id } }
+    val initialSelectedIndex = selectedMemoId?.let { memoIds.indexOf(it) } ?: -1
+    val initialCarouselOffset = if (initialSelectedIndex >= 0) {
+        -initialSelectedIndex.toFloat()
+    } else {
+        0f
+    }
+    val carouselOffset = remember(memoIdKey) {
+        Animatable(initialCarouselOffset)
+    }
     var handledSettleSerial by remember { mutableStateOf(0) }
     val settleTargetIndex = settleTargetId?.let { memoIds.indexOf(it) } ?: -1
     val hasPendingSettle = settleSerial > 0 &&
