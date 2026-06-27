@@ -764,6 +764,9 @@ private fun AdvancedHomeScreen(
     var dragPoint by remember { mutableStateOf(Offset.Zero) }
     var draggedCardBounds by remember { mutableStateOf<Rect?>(null) }
     var homeMemoOrderChanged by remember { mutableStateOf(false) }
+    var homeDragStartOrderIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    var homeCarouselSettleTargetId by remember { mutableStateOf<String?>(null) }
+    var homeCarouselSettleSerial by remember { mutableStateOf(0) }
     var imageChangeBounds by remember { mutableStateOf<Rect?>(null) }
     var cardTrashBounds by remember { mutableStateOf<Rect?>(null) }
     var pendingImageMemo by remember { mutableStateOf<ShoppingMemo?>(null) }
@@ -796,6 +799,7 @@ private fun AdvancedHomeScreen(
     val latestHomeBounds by rememberUpdatedState(homeBounds)
     val latestHomeControlBounds by rememberUpdatedState(homeControlBounds)
     val latestTemporaryListBounds by rememberUpdatedState(temporaryListBounds)
+    val latestDraggingId by rememberUpdatedState(draggingId)
     val sourceMemoIds = memos.map { it.id }
     val orderedHomeMemos = run {
         val byId = memos.associateBy { it.id }
@@ -874,8 +878,12 @@ private fun AdvancedHomeScreen(
 
     LaunchedEffect(sourceMemoIds, draggingId) {
         if (draggingId == null) {
-            homeMemoOrderIds.clear()
-            homeMemoOrderIds.addAll(sourceMemoIds)
+            val hasSameMemos = homeMemoOrderIds.size == sourceMemoIds.size &&
+                homeMemoOrderIds.toSet() == sourceMemoIds.toSet()
+            if (!hasSameMemos) {
+                homeMemoOrderIds.clear()
+                homeMemoOrderIds.addAll(sourceMemoIds)
+            }
         } else {
             homeMemoOrderIds.removeAll { it !in sourceMemoIds }
             sourceMemoIds.forEach { id ->
@@ -983,18 +991,44 @@ private fun AdvancedHomeScreen(
         homeMemoOrderIds.clear()
         homeMemoOrderIds.addAll(sourceMemoIds)
         homeMemoOrderChanged = false
+        homeDragStartOrderIds = emptyList()
     }
 
-    fun finishHomeMemoDrag() {
-        val memo = memos.firstOrNull { it.id == draggingId }
+    fun finishHomeMemoDrag(swapCandidateId: String? = null) {
+        val draggedMemoId = draggingId
+        val memo = memos.firstOrNull { it.id == draggedMemoId }
+        val sourceMemoIdSet = sourceMemoIds.toSet()
+        fun validOrderOrNull(order: List<String>): List<String>? {
+            return order.takeIf { it.size == sourceMemoIds.size && it.toSet() == sourceMemoIdSet }
+        }
         when {
             memo != null && imageChangeBounds?.contains(dragPoint) == true -> pendingImageMemo = memo
             memo != null && cardTrashBounds?.contains(dragPoint) == true -> onDeleteMemo(memo)
+            draggedMemoId != null && swapCandidateId != null && draggedMemoId != swapCandidateId -> {
+                val baseOrder = validOrderOrNull(homeDragStartOrderIds)
+                    ?: validOrderOrNull(homeMemoOrderIds.toList())
+                    ?: sourceMemoIds
+                val draggedIndex = baseOrder.indexOf(draggedMemoId)
+                val candidateIndex = baseOrder.indexOf(swapCandidateId)
+                if (draggedIndex >= 0 && candidateIndex >= 0) {
+                    val nextOrder = baseOrder.toMutableList()
+                    val dragged = nextOrder[draggedIndex]
+                    nextOrder[draggedIndex] = nextOrder[candidateIndex]
+                    nextOrder[candidateIndex] = dragged
+                    homeMemoOrderIds.clear()
+                    homeMemoOrderIds.addAll(nextOrder)
+                    homeCarouselSettleTargetId = swapCandidateId
+                    homeCarouselSettleSerial++
+                    onApplyMemoOrder(homeMemoOrderIds.toList())
+                    onHomeCarouselSelected(swapCandidateId)
+                }
+            }
         }
         draggingId = null
         dragOffset = Offset.Zero
         draggedCardBounds = null
         homeMemoOrderChanged = false
+        homeDragStartOrderIds = emptyList()
     }
 
     fun startOneHandFling(initialVelocityY: Float) {
@@ -1060,6 +1094,21 @@ private fun AdvancedHomeScreen(
             .onGloballyPositioned {
                 homeBounds = it.boundsInWindow()
                 homeHeightPx = it.size.height
+            }
+            .pointerInput(draggingId) {
+                if (draggingId == null) return@pointerInput
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Final)
+                        if (event.changes.none { it.pressed }) {
+                            scope.launch {
+                                delay(80)
+                                if (latestDraggingId != null) finishHomeMemoDrag()
+                            }
+                            break
+                        }
+                    }
+                }
             }
             .pointerInput(pagerState.currentPage, dragActive) {
                 if (dragActive) return@pointerInput
@@ -1165,12 +1214,22 @@ private fun AdvancedHomeScreen(
                         memoCardBounds = memoCardBounds,
                         sparklingMemoIds = sparklingMemoIds,
                         selectedMemoId = homeCarouselSelectedMemoId,
+                        settleTargetId = homeCarouselSettleTargetId,
+                        settleSerial = homeCarouselSettleSerial,
                         onSelectedMemoChanged = onHomeCarouselSelected,
                         draggingId = draggingId,
                         draggedCardBounds = draggedCardBounds,
                         dragPoint = dragPoint,
                         dragOffset = dragOffset,
                         onDragStart = { memo, start, bounds ->
+                            val sourceMemoIdSet = sourceMemoIds.toSet()
+                            val hasStableOrder = homeMemoOrderIds.size == sourceMemoIds.size &&
+                                homeMemoOrderIds.toSet() == sourceMemoIdSet
+                            if (!hasStableOrder) {
+                                homeMemoOrderIds.clear()
+                                homeMemoOrderIds.addAll(sourceMemoIds)
+                            }
+                            homeDragStartOrderIds = homeMemoOrderIds.toList()
                             draggingId = memo.id
                             dragOffset = Offset.Zero
                             draggedCardBounds = bounds
@@ -1182,11 +1241,12 @@ private fun AdvancedHomeScreen(
                             dragPoint += amount
                         },
                         onAutoScrollTick = {},
-                        onDragEnd = { finishHomeMemoDrag() },
+                        onDragEnd = { swapCandidateId -> finishHomeMemoDrag(swapCandidateId) },
                         onDragCancel = {
                             draggingId = null
                             dragOffset = Offset.Zero
                             draggedCardBounds = null
+                            homeDragStartOrderIds = emptyList()
                             resetHomeMemoOrder()
                         },
                         onOpenMemo = onOpenMemo,
@@ -1369,6 +1429,8 @@ private fun HomeItemsPage(
     memoCardBounds: MutableMap<String, Rect>,
     sparklingMemoIds: List<String>,
     selectedMemoId: String?,
+    settleTargetId: String?,
+    settleSerial: Int,
     onSelectedMemoChanged: (String?) -> Unit,
     draggingId: String?,
     draggedCardBounds: Rect?,
@@ -1377,7 +1439,7 @@ private fun HomeItemsPage(
     onDragStart: (ShoppingMemo, Offset, Rect?) -> Unit,
     onDrag: (Offset) -> Unit,
     onAutoScrollTick: () -> Unit,
-    onDragEnd: () -> Unit,
+    onDragEnd: (String?) -> Unit,
     onDragCancel: () -> Unit,
     onOpenMemo: (ShoppingMemo) -> Unit,
     onToggleFavorite: (ShoppingMemo) -> Unit,
@@ -1405,6 +1467,8 @@ private fun HomeItemsPage(
         memoCardBounds = memoCardBounds,
         sparklingMemoIds = sparklingMemoIds,
         selectedMemoId = selectedMemoId,
+        settleTargetId = settleTargetId,
+        settleSerial = settleSerial,
         onSelectedMemoChanged = onSelectedMemoChanged,
         draggingId = draggingId,
         dragPoint = dragPoint,
@@ -1431,12 +1495,14 @@ private fun HomeMemoCarouselPage(
     memoCardBounds: MutableMap<String, Rect>,
     sparklingMemoIds: List<String>,
     selectedMemoId: String?,
+    settleTargetId: String?,
+    settleSerial: Int,
     onSelectedMemoChanged: (String?) -> Unit,
     draggingId: String?,
     dragPoint: Offset,
     onDragStart: (ShoppingMemo, Offset, Rect?) -> Unit,
     onDrag: (Offset) -> Unit,
-    onDragEnd: () -> Unit,
+    onDragEnd: (String?) -> Unit,
     onDragCancel: () -> Unit,
     onOpenMemo: (ShoppingMemo) -> Unit,
     onToggleFavorite: (ShoppingMemo) -> Unit,
@@ -1450,12 +1516,66 @@ private fun HomeMemoCarouselPage(
     onControlPositioned: (Rect) -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
     val carouselOffset = remember { Animatable(0f) }
     val count = memos.size
     val latestCount by rememberUpdatedState(count)
     val memoIdKey = memos.joinToString(separator = "|") { it.id }
     val memoIds = remember(memoIdKey) { memos.map { it.id } }
+    var handledSettleSerial by remember { mutableStateOf(0) }
+    val settleTargetIndex = settleTargetId?.let { memoIds.indexOf(it) } ?: -1
+    val hasPendingSettle = settleSerial > 0 &&
+        settleSerial != handledSettleSerial &&
+        settleTargetIndex >= 0 &&
+        draggingId == null
+    val effectiveCarouselOffset = if (hasPendingSettle) {
+        -settleTargetIndex.toFloat()
+    } else {
+        carouselOffset.value
+    }
     var carouselDragging by remember { mutableStateOf(false) }
+    var confirmedDragSwapCandidateId by remember { mutableStateOf<String?>(null) }
+    var dragAllowedSwapCandidateId by remember { mutableStateOf<String?>(null) }
+    var dragStartWindowPoint by remember { mutableStateOf<Offset?>(null) }
+    val swapPreviewProgress = remember { Animatable(0f) }
+    val swapActivationPaddingPx = with(density) { 64.dp.toPx() }
+    val swapActivationDistancePx = with(density) { 132.dp.toPx() }
+    val swapActivationDragPx = with(density) { 58.dp.toPx() }
+    val dragStartPoint = dragStartWindowPoint
+    val dragVector = if (dragStartPoint == null) Offset.Zero else dragPoint - dragStartPoint
+    val dragDistance = kotlin.math.sqrt(dragVector.x * dragVector.x + dragVector.y * dragVector.y)
+
+    val dragSwapCandidateId = if (
+        draggingId != null &&
+        dragStartPoint != null &&
+        dragDistance >= swapActivationDragPx &&
+        count > 1 &&
+        !imageTargetActive &&
+        !trashTargetActive
+    ) {
+        val startPoint = dragStartPoint
+        val allowedCandidateId = dragAllowedSwapCandidateId
+        val directionX = dragVector.x / dragDistance.coerceAtLeast(1f)
+        val directionY = dragVector.y / dragDistance.coerceAtLeast(1f)
+        val targetBounds = allowedCandidateId?.let { memoCardBounds[it] }
+        if (allowedCandidateId != null && targetBounds != null) {
+            val targetVector = targetBounds.center - startPoint
+            val targetDistance = kotlin.math.sqrt(targetVector.x * targetVector.x + targetVector.y * targetVector.y)
+            val projection = targetVector.x * directionX + targetVector.y * directionY
+            val sameDirection = targetDistance > 1f && projection / targetDistance > 0.48f
+            val crossedTowardTarget = projection > targetDistance * 0.38f && dragDistance > targetDistance * 0.30f
+            val isNearTarget = expandedRectContains(targetBounds, dragPoint, swapActivationPaddingPx) ||
+                distanceToRect(targetBounds, dragPoint) <= swapActivationDistancePx
+            if (sameDirection && crossedTowardTarget && isNearTarget) allowedCandidateId else null
+        } else {
+            null
+        }
+    } else {
+        null
+    }
+    val latestDragSwapCandidateId by rememberUpdatedState(dragSwapCandidateId)
+    val activeDragSwapCandidateId = confirmedDragSwapCandidateId
+    val latestConfirmedDragSwapCandidateId by rememberUpdatedState(activeDragSwapCandidateId)
 
     fun selectedMemoIdForOffset(offset: Float): String? {
         if (count <= 0) return null
@@ -1463,7 +1583,7 @@ private fun HomeMemoCarouselPage(
     }
 
     LaunchedEffect(memoIdKey, selectedMemoId) {
-        if (carouselDragging) return@LaunchedEffect
+        if (carouselDragging || hasPendingSettle) return@LaunchedEffect
         if (count == 0) {
             carouselOffset.snapTo(0f)
         } else {
@@ -1473,6 +1593,53 @@ private fun HomeMemoCarouselPage(
             } else {
                 carouselOffset.snapTo(carouselOffset.value.coerceIn(-count.toFloat(), count.toFloat()))
             }
+        }
+    }
+
+    LaunchedEffect(draggingId) {
+        if (draggingId == null) {
+            confirmedDragSwapCandidateId = null
+            dragAllowedSwapCandidateId = null
+            dragStartWindowPoint = null
+            swapPreviewProgress.snapTo(0f)
+            if (!hasPendingSettle && count == 0) {
+                carouselOffset.snapTo(0f)
+            } else if (!hasPendingSettle) {
+                val selectedIndex = selectedMemoId?.let { memoIds.indexOf(it) } ?: -1
+                if (selectedIndex >= 0) {
+                    carouselOffset.snapTo(-selectedIndex.toFloat())
+                }
+            }
+            carouselDragging = false
+        }
+    }
+
+    LaunchedEffect(settleSerial, settleTargetId, memoIdKey) {
+        if (settleSerial > 0 && settleTargetIndex >= 0) {
+            carouselOffset.snapTo(-settleTargetIndex.toFloat())
+            handledSettleSerial = settleSerial
+            carouselDragging = false
+        }
+    }
+
+    LaunchedEffect(dragSwapCandidateId) {
+        val candidateId = dragSwapCandidateId
+        if (draggingId != null && candidateId != null && confirmedDragSwapCandidateId == null) {
+            confirmedDragSwapCandidateId = candidateId
+        }
+    }
+
+    LaunchedEffect(activeDragSwapCandidateId, draggingId, memoIdKey) {
+        if (draggingId != null && activeDragSwapCandidateId != null) {
+            swapPreviewProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
+        } else {
+            swapPreviewProgress.snapTo(0f)
         }
     }
 
@@ -1528,9 +1695,30 @@ private fun HomeMemoCarouselPage(
         val radiusX = maxWidth * 0.68f
         val radiusY = maxHeight * 0.42f
         val frontAngle = -2.25f
-        val snappedOffset = carouselOffset.value.roundToInt()
+        data class CarouselPlacement(
+            val x: Dp,
+            val y: Dp,
+            val scale: Float,
+            val alpha: Float
+        )
+
+        fun placementFor(relativeValue: Float): CarouselPlacement {
+            val absRelativeValue = kotlin.math.abs(relativeValue)
+            val stepAngle = 0.78f
+            val angle = frontAngle + relativeValue * stepAngle
+            val sin = kotlin.math.sin(angle.toDouble()).toFloat()
+            val cos = kotlin.math.cos(angle.toDouble()).toFloat()
+            return CarouselPlacement(
+                x = orbitCenterX + radiusX * cos - cardWidth / 2f,
+                y = orbitCenterY + radiusY * sin - cardHeight / 2f,
+                scale = (1.08f - absRelativeValue * 0.11f).coerceIn(0.72f, 1.08f),
+                alpha = (1f - (absRelativeValue - 2.5f).coerceAtLeast(0f) * 0.25f).coerceIn(0.35f, 1f)
+            )
+        }
+
+        val snappedOffset = effectiveCarouselOffset.roundToInt()
         val frontIndex = if (count == 0) 0 else floorModIndex(-snappedOffset, count)
-        val fractionalOffset = carouselOffset.value - snappedOffset
+        val fractionalOffset = effectiveCarouselOffset - snappedOffset
         val isCarouselSettled = count > 0 && !carouselDragging && kotlin.math.abs(fractionalOffset) < 0.03f
         val settledSelectedMemo = if (isCarouselSettled) memos.getOrNull(frontIndex) else null
 
@@ -1560,17 +1748,18 @@ private fun HomeMemoCarouselPage(
                     count = count
                 )
                 val absRelative = kotlin.math.abs(relative)
-                val visible = count <= 6 || absRelative <= 2.6f
+                val isPreviewCandidate = memo.id == activeDragSwapCandidateId
+                val visible = count <= 6 || absRelative <= 2.6f || isPreviewCandidate
                 if (visible) {
-                    val stepAngle = 0.78f
-                    val angle = frontAngle + relative * stepAngle
-                    val sin = kotlin.math.sin(angle.toDouble()).toFloat()
-                    val cos = kotlin.math.cos(angle.toDouble()).toFloat()
-                    val x = orbitCenterX + radiusX * cos - cardWidth / 2f
-                    val y = orbitCenterY + radiusY * sin - cardHeight / 2f
-                    val scale = (1.08f - absRelative * 0.11f).coerceIn(0.72f, 1.08f)
-                    val alpha = (1f - (absRelative - 2.5f).coerceAtLeast(0f) * 0.25f).coerceIn(0.35f, 1f)
+                    val basePlacement = placementFor(relative)
+                    val frontPlacement = placementFor(0f)
+                    val previewProgress = if (isPreviewCandidate) swapPreviewProgress.value.coerceIn(0f, 1f) else 0f
+                    val x = basePlacement.x + (frontPlacement.x - basePlacement.x) * previewProgress
+                    val y = basePlacement.y + (frontPlacement.y - basePlacement.y) * previewProgress
+                    val scale = lerpFloat(basePlacement.scale, frontPlacement.scale, previewProgress)
+                    val alpha = lerpFloat(basePlacement.alpha, 1f, previewProgress)
                     val isFront = absRelative < 0.45f
+                    val isVisuallyFront = isFront || previewProgress > 0.55f
                     var cardBounds by remember(memo.id) { mutableStateOf<Rect?>(null) }
                     val isDraggingMemo = draggingId == memo.id
 
@@ -1587,15 +1776,23 @@ private fun HomeMemoCarouselPage(
                                 scaleX = scale
                                 scaleY = scale
                                 this.alpha = if (isDraggingMemo) alpha * 0.22f else alpha
-                                shadowElevation = if (isFront) 24f else 8f
+                                shadowElevation = if (isVisuallyFront) 24f else 8f
                             }
-                            .zIndex(100f - absRelative)
+                            .zIndex(if (previewProgress > 0f) 180f + previewProgress else 100f - absRelative)
                             .then(
-                                if (isFront) {
-                                    Modifier.pointerInput(memo.id, isFront) {
+                                if (isFront || isDraggingMemo) {
+                                    Modifier.pointerInput(memo.id) {
                                         detectDragGesturesAfterLongPress(
                                             onDragStart = { start ->
                                                 carouselDragging = true
+                                                dragAllowedSwapCandidateId = if (count > 1) {
+                                                    memos.getOrNull(floorModIndex(index + 1, count))?.id
+                                                } else {
+                                                    null
+                                                }
+                                                dragStartWindowPoint = cardBounds?.let { bounds ->
+                                                    Offset(bounds.left + start.x, bounds.top + start.y)
+                                                }
                                                 onSelectedMemoChanged(memo.id)
                                                 onDragStart(memo, start, cardBounds)
                                             },
@@ -1604,12 +1801,12 @@ private fun HomeMemoCarouselPage(
                                                 onDrag(amount)
                                             },
                                             onDragEnd = {
-                                                carouselDragging = false
-                                                onDragEnd()
+                                                val swapCandidateId = latestConfirmedDragSwapCandidateId ?: latestDragSwapCandidateId
+                                                onDragEnd(swapCandidateId)
                                             },
                                             onDragCancel = {
-                                                carouselDragging = false
                                                 onDragCancel()
+                                                carouselDragging = false
                                             }
                                         )
                                     }
@@ -1618,7 +1815,7 @@ private fun HomeMemoCarouselPage(
                                 }
                             )
                             .then(
-                                if (isFront) {
+                                if (isVisuallyFront) {
                                     Modifier
                                         .border(4.dp, Color(0xFFFFEA00), RoundedCornerShape(14.dp))
                                         .padding(4.dp)
@@ -1635,12 +1832,12 @@ private fun HomeMemoCarouselPage(
                                 ,
                             onClick = {
                                 val selectedNow = latestCount == 0 ||
-                                    floorModIndex(-carouselOffset.value.roundToInt(), latestCount.coerceAtLeast(1)) == index
+                                    floorModIndex(-effectiveCarouselOffset.roundToInt(), latestCount.coerceAtLeast(1)) == index
                                 if (selectedNow) {
                                     onOpenMemo(memo)
                                 } else {
                                     scope.launch {
-                                        val current = carouselOffset.value.roundToInt()
+                                        val current = effectiveCarouselOffset.roundToInt()
                                         val delta = shortestCarouselDelta(index, floorModIndex(-current, count), count)
                                         carouselOffset.animateTo(
                                             targetValue = (current - delta).toFloat(),
@@ -1833,6 +2030,31 @@ private fun floorModIndex(value: Int, size: Int): Int {
     if (size <= 0) return 0
     val mod = value % size
     return if (mod < 0) mod + size else mod
+}
+
+private fun expandedRectContains(rect: Rect, point: Offset, padding: Float): Boolean {
+    return point.x >= rect.left - padding &&
+        point.x <= rect.right + padding &&
+        point.y >= rect.top - padding &&
+        point.y <= rect.bottom + padding
+}
+
+private fun distanceToRect(rect: Rect, point: Offset): Float {
+    val dx = when {
+        point.x < rect.left -> rect.left - point.x
+        point.x > rect.right -> point.x - rect.right
+        else -> 0f
+    }
+    val dy = when {
+        point.y < rect.top -> rect.top - point.y
+        point.y > rect.bottom -> point.y - rect.bottom
+        else -> 0f
+    }
+    return kotlin.math.sqrt(dx * dx + dy * dy)
+}
+
+private fun lerpFloat(start: Float, stop: Float, fraction: Float): Float {
+    return start + (stop - start) * fraction
 }
 
 private fun circularRelativeIndex(
