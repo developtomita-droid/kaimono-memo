@@ -314,6 +314,7 @@ private val TrashTabSelectedColor = Color(0xFFE91E63)
 private val HomeTitleHeaderHeight = 52.dp
 private val HomeProgressBarHeight = 44.dp
 private const val HomeCarouselTraceTag = "HomeCarouselTrace"
+private const val EditMoveTraceTag = "EditMoveTrace"
 private val CompletedEntryBackground = Color(0xFFE8E8E8)
 
 private data class AppFontSizes(
@@ -377,6 +378,24 @@ private fun formatMemoOrderForTrace(memos: List<ShoppingMemo>): String {
         val title = memo.title.ifBlank { "(blank)" }
         "${index + 1}:$title#${memo.id.takeLast(6)}"
     }.joinToString(" > ")
+}
+
+private fun formatEditMemoForTrace(memo: ShoppingMemo?): String {
+    return memo?.let { "${it.title.ifBlank { "(blank)" }}#${it.id.takeLast(6)}" } ?: "none"
+}
+
+private fun formatEditEntryForTrace(entry: ShoppingEntry?): String {
+    return entry?.let { "${it.name.ifBlank { "(blank)" }}#${it.id.takeLast(6)}" } ?: "none"
+}
+
+private fun formatOffsetForTrace(offset: Offset): String {
+    return "(${offset.x.roundToInt()},${offset.y.roundToInt()})"
+}
+
+private fun formatRectForTrace(rect: Rect?): String {
+    return rect?.let {
+        "(${it.left.roundToInt()},${it.top.roundToInt()})-(${it.right.roundToInt()},${it.bottom.roundToInt()})"
+    } ?: "none"
 }
 
 private fun temporaryTitleForMode(simpleModeEnabled: Boolean): String {
@@ -7748,6 +7767,7 @@ private fun MemoMoveEditScreen(
     var rightScrollTargetId by remember { mutableStateOf<String?>(null) }
     var leftScrollSerial by remember { mutableStateOf(0) }
     var rightScrollSerial by remember { mutableStateOf(0) }
+    var lastDragOverTarget by remember { mutableStateOf<String?>(null) }
     val editMovedEntryIds = remember { mutableStateListOf<String>() }
     val leftMemo = memos.firstOrNull { it.id == leftMemoId }
     val rightMemo = memos.firstOrNull { it.id == rightMemoId }
@@ -7756,13 +7776,18 @@ private fun MemoMoveEditScreen(
 
     LaunchedEffect(memoIdKey) {
         val ids = memos.map { it.id }
-        if (leftMemoId !in ids) leftMemoId = ids.firstOrNull()
+        val defaultLeftMemoId = memos.firstOrNull { isTemporaryMemo(it) }?.id ?: ids.firstOrNull()
+        if (leftMemoId !in ids) leftMemoId = defaultLeftMemoId
         if (rightMemoId !in ids || rightMemoId == leftMemoId) {
             rightMemoId = ids.firstOrNull { it != leftMemoId } ?: ids.firstOrNull()
         }
     }
 
     fun selectMemo(side: EditPaneSide, memo: ShoppingMemo) {
+        Log.d(
+            EditMoveTraceTag,
+            "selectMemo side=$side new=${formatEditMemoForTrace(memo)} oldLeft=${formatEditMemoForTrace(leftMemo)} oldRight=${formatEditMemoForTrace(rightMemo)}"
+        )
         when (side) {
             EditPaneSide.Left -> {
                 if (memo.id == rightMemoId) rightMemoId = leftMemoId
@@ -7776,21 +7801,108 @@ private fun MemoMoveEditScreen(
         selectingSide = null
     }
 
+    fun selectAdjacentMemo(side: EditPaneSide, step: Int) {
+        if (memos.size <= 1) {
+            Log.d(EditMoveTraceTag, "selectAdjacent ignored side=$side reason=singleMemo")
+            return
+        }
+        val currentMemoId = if (side == EditPaneSide.Left) leftMemoId else rightMemoId
+        val otherMemoId = if (side == EditPaneSide.Left) rightMemoId else leftMemoId
+        val currentIndex = memos.indexOfFirst { it.id == currentMemoId }.takeIf { it >= 0 } ?: 0
+        val skipOtherPane = memos.size > 2
+        repeat(memos.size) { offset ->
+            val nextIndex = Math.floorMod(currentIndex + step * (offset + 1), memos.size)
+            val candidate = memos[nextIndex]
+            if (!skipOtherPane || candidate.id != otherMemoId) {
+                Log.d(
+                    EditMoveTraceTag,
+                    "selectAdjacent side=$side step=$step current=${formatEditMemoForTrace(memos.getOrNull(currentIndex))} candidate=${formatEditMemoForTrace(candidate)} other=${otherMemoId?.takeLast(6)}"
+                )
+                selectMemo(side, candidate)
+                return
+            }
+        }
+        Log.d(EditMoveTraceTag, "selectAdjacent ignored side=$side reason=noCandidate")
+    }
+
     fun swapSelectedMemos() {
+        Log.d(
+            EditMoveTraceTag,
+            "swapSelected left=${formatEditMemoForTrace(leftMemo)} right=${formatEditMemoForTrace(rightMemo)}"
+        )
         val oldLeft = leftMemoId
         leftMemoId = rightMemoId
         rightMemoId = oldLeft
     }
 
+    fun dragOverTarget(point: Offset): String {
+        return when {
+            leftPaneBounds?.contains(point) == true -> "Left"
+            rightPaneBounds?.contains(point) == true -> "Right"
+            else -> "None"
+        }
+    }
+
+    fun startEntryDrag(side: EditPaneSide, memo: ShoppingMemo, entry: ShoppingEntry, start: Offset, bounds: Rect) {
+        draggingEntry = EditDraggingEntry(side, memo, entry)
+        draggingBounds = bounds
+        dragOffset = Offset.Zero
+        dragPoint = Offset(bounds.left + start.x, bounds.top + start.y)
+        lastDragOverTarget = dragOverTarget(dragPoint)
+        Log.d(
+            EditMoveTraceTag,
+            "dragStart side=$side memo=${formatEditMemoForTrace(memo)} entry=${formatEditEntryForTrace(entry)} start=${formatOffsetForTrace(start)} point=${formatOffsetForTrace(dragPoint)} rowBounds=${formatRectForTrace(bounds)} leftBounds=${formatRectForTrace(leftPaneBounds)} rightBounds=${formatRectForTrace(rightPaneBounds)} over=$lastDragOverTarget"
+        )
+    }
+
+    fun dragEntryBy(amount: Offset) {
+        dragOffset += amount
+        dragPoint += amount
+        val over = dragOverTarget(dragPoint)
+        if (over != lastDragOverTarget) {
+            Log.d(
+                EditMoveTraceTag,
+                "dragOverChanged entry=${formatEditEntryForTrace(draggingEntry?.entry)} point=${formatOffsetForTrace(dragPoint)} from=$lastDragOverTarget to=$over leftBounds=${formatRectForTrace(leftPaneBounds)} rightBounds=${formatRectForTrace(rightPaneBounds)}"
+            )
+            lastDragOverTarget = over
+        }
+    }
+
+    fun cancelEntryDrag(reason: String) {
+        Log.d(
+            EditMoveTraceTag,
+            "dragCancel reason=$reason entry=${formatEditEntryForTrace(draggingEntry?.entry)} point=${formatOffsetForTrace(dragPoint)} over=${dragOverTarget(dragPoint)}"
+        )
+        draggingEntry = null
+        draggingBounds = null
+        dragOffset = Offset.Zero
+        dragPoint = Offset.Zero
+        lastDragOverTarget = null
+    }
+
     fun moveEntryTo(source: ShoppingMemo, target: ShoppingMemo, entry: ShoppingEntry, targetSide: EditPaneSide) {
-        if (source.id == target.id || entry.name.isBlank()) return
-        if (!source.entries.remove(entry)) return
+        if (source.id == target.id) {
+            Log.d(EditMoveTraceTag, "moveIgnored reason=sameMemo source=${formatEditMemoForTrace(source)} entry=${formatEditEntryForTrace(entry)}")
+            return
+        }
+        if (entry.name.isBlank()) {
+            Log.d(EditMoveTraceTag, "moveIgnored reason=blankEntry source=${formatEditMemoForTrace(source)} target=${formatEditMemoForTrace(target)}")
+            return
+        }
+        if (!source.entries.remove(entry)) {
+            Log.d(EditMoveTraceTag, "moveIgnored reason=sourceMissing source=${formatEditMemoForTrace(source)} target=${formatEditMemoForTrace(target)} entry=${formatEditEntryForTrace(entry)}")
+            return
+        }
         val insertIndex = if (entry.checked) {
             target.entries.size
         } else {
             val firstDoneOrBlank = target.entries.indexOfFirst { it.name.isBlank() || it.checked }
             if (firstDoneOrBlank >= 0) firstDoneOrBlank else target.entries.size
         }
+        Log.d(
+            EditMoveTraceTag,
+            "moveCommit source=${formatEditMemoForTrace(source)} target=${formatEditMemoForTrace(target)} targetSide=$targetSide entry=${formatEditEntryForTrace(entry)} insertIndex=$insertIndex"
+        )
         target.entries.add(insertIndex, entry)
         ensureDisplayBlankEntry(source)
         ensureDisplayBlankEntry(target)
@@ -7812,20 +7924,29 @@ private fun MemoMoveEditScreen(
     fun finishDrag() {
         val dragging = draggingEntry
         if (dragging != null) {
+            val leftHit = leftPaneBounds?.contains(dragPoint) == true
+            val rightHit = rightPaneBounds?.contains(dragPoint) == true
             val target = when {
-                dragging.side == EditPaneSide.Left && rightPaneBounds?.contains(dragPoint) == true -> rightMemo
-                dragging.side == EditPaneSide.Right && leftPaneBounds?.contains(dragPoint) == true -> leftMemo
+                dragging.side == EditPaneSide.Left && rightHit -> rightMemo
+                dragging.side == EditPaneSide.Right && leftHit -> leftMemo
                 else -> null
             }
+            Log.d(
+                EditMoveTraceTag,
+                "dragEnd side=${dragging.side} entry=${formatEditEntryForTrace(dragging.entry)} point=${formatOffsetForTrace(dragPoint)} leftHit=$leftHit rightHit=$rightHit target=${formatEditMemoForTrace(target)} leftBounds=${formatRectForTrace(leftPaneBounds)} rightBounds=${formatRectForTrace(rightPaneBounds)}"
+            )
             if (target != null) {
                 val targetSide = if (dragging.side == EditPaneSide.Left) EditPaneSide.Right else EditPaneSide.Left
                 moveEntryTo(dragging.memo, target, dragging.entry, targetSide)
             }
+        } else {
+            Log.d(EditMoveTraceTag, "dragEnd ignored reason=noDragging")
         }
         draggingEntry = null
         draggingBounds = null
         dragOffset = Offset.Zero
         dragPoint = Offset.Zero
+        lastDragOverTarget = null
     }
 
     OneHandSettingsFrame(
@@ -7872,25 +7993,16 @@ private fun MemoMoveEditScreen(
                             highlightedEntryIds = editMovedEntryIds.toSet(),
                             scrollTargetEntryId = leftScrollTargetId,
                             scrollRequestSerial = leftScrollSerial,
+                            swipeEnabled = draggingEntry == null,
                             onHeaderClick = { selectingSide = EditPaneSide.Left },
+                            onSwipeLeft = { selectAdjacentMemo(EditPaneSide.Left, 1) },
+                            onSwipeRight = { selectAdjacentMemo(EditPaneSide.Left, -1) },
                             onListAtTopChanged = { leftPaneAtTop = it },
                             onPanePositioned = { leftPaneBounds = it },
-                            onEntryDragStart = { memo, entry, start, bounds ->
-                                draggingEntry = EditDraggingEntry(EditPaneSide.Left, memo, entry)
-                                draggingBounds = bounds
-                                dragOffset = Offset.Zero
-                                dragPoint = Offset(bounds.left + start.x, bounds.top + start.y)
-                            },
-                            onEntryDrag = { amount ->
-                                dragOffset += amount
-                                dragPoint += amount
-                            },
+                            onEntryDragStart = { memo, entry, start, bounds -> startEntryDrag(EditPaneSide.Left, memo, entry, start, bounds) },
+                            onEntryDrag = ::dragEntryBy,
                             onEntryDragEnd = ::finishDrag,
-                            onEntryDragCancel = {
-                                draggingEntry = null
-                                draggingBounds = null
-                                dragOffset = Offset.Zero
-                            },
+                            onEntryDragCancel = { cancelEntryDrag("leftGestureCancel") },
                             modifier = Modifier.weight(1f)
                         )
                         Spacer(Modifier.width(12.dp))
@@ -7905,25 +8017,16 @@ private fun MemoMoveEditScreen(
                             highlightedEntryIds = editMovedEntryIds.toSet(),
                             scrollTargetEntryId = rightScrollTargetId,
                             scrollRequestSerial = rightScrollSerial,
+                            swipeEnabled = draggingEntry == null,
                             onHeaderClick = { selectingSide = EditPaneSide.Right },
+                            onSwipeLeft = { selectAdjacentMemo(EditPaneSide.Right, 1) },
+                            onSwipeRight = { selectAdjacentMemo(EditPaneSide.Right, -1) },
                             onListAtTopChanged = { rightPaneAtTop = it },
                             onPanePositioned = { rightPaneBounds = it },
-                            onEntryDragStart = { memo, entry, start, bounds ->
-                                draggingEntry = EditDraggingEntry(EditPaneSide.Right, memo, entry)
-                                draggingBounds = bounds
-                                dragOffset = Offset.Zero
-                                dragPoint = Offset(bounds.left + start.x, bounds.top + start.y)
-                            },
-                            onEntryDrag = { amount ->
-                                dragOffset += amount
-                                dragPoint += amount
-                            },
+                            onEntryDragStart = { memo, entry, start, bounds -> startEntryDrag(EditPaneSide.Right, memo, entry, start, bounds) },
+                            onEntryDrag = ::dragEntryBy,
                             onEntryDragEnd = ::finishDrag,
-                            onEntryDragCancel = {
-                                draggingEntry = null
-                                draggingBounds = null
-                                dragOffset = Offset.Zero
-                            },
+                            onEntryDragCancel = { cancelEntryDrag("rightGestureCancel") },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -7980,13 +8083,14 @@ private fun EditInstructionPanel(onDismiss: () -> Unit) {
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    "アイテムを移動できます。",
+                    "カードのタイトルをタップするか、カードを左右スワイプすると、カードを切り替えることができます。",
                     color = Color(0xFF3E2D22),
-                    fontSize = sizes.editHelpTitle,
+                    fontSize = sizes.editHelpBody,
+                    lineHeight = sizes.editHelpLineHeight,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    "カードのタイトルをタップすると、カードを切り替えることができます。",
+                    "アイテムをドラッグ＆ドロップで移動してください。",
                     color = Color(0xFF5D4037),
                     fontSize = sizes.editHelpBody,
                     lineHeight = sizes.editHelpLineHeight
@@ -7994,9 +8098,10 @@ private fun EditInstructionPanel(onDismiss: () -> Unit) {
             }
             TextButton(
                 onClick = onDismiss,
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                modifier = Modifier.size(44.dp),
+                contentPadding = PaddingValues(0.dp)
             ) {
-                Text("×", color = Color(0xFF795548), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text("×", color = Color(0xFF795548), fontSize = 28.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -8014,7 +8119,10 @@ private fun EditMemoPane(
     highlightedEntryIds: Set<String>,
     scrollTargetEntryId: String?,
     scrollRequestSerial: Int,
+    swipeEnabled: Boolean,
     onHeaderClick: () -> Unit,
+    onSwipeLeft: () -> Unit,
+    onSwipeRight: () -> Unit,
     onListAtTopChanged: (Boolean) -> Unit,
     onPanePositioned: (Rect) -> Unit,
     onEntryDragStart: (ShoppingMemo, ShoppingEntry, Offset, Rect) -> Unit,
@@ -8025,6 +8133,10 @@ private fun EditMemoPane(
 ) {
     val density = LocalDensity.current
     val sizes = LocalAppFontSizes.current
+    val swipeThresholdPx = with(density) { 56.dp.toPx() }
+    val latestSwipeEnabled by rememberUpdatedState(swipeEnabled)
+    val latestOnSwipeLeft by rememberUpdatedState(onSwipeLeft)
+    val latestOnSwipeRight by rememberUpdatedState(onSwipeRight)
     val listState = rememberLazyListState()
     val listAtTop = !listState.canScrollBackward
 
@@ -8054,6 +8166,85 @@ private fun EditMemoPane(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
+                .pointerInput(memo?.id, side, swipeThresholdPx) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        var totalMove = Offset.Zero
+                        var switched = false
+                        var horizontalIntent = false
+                        var verticalIntent = false
+                        var blockedByLongPress = false
+                        var loggedLongPressBlock = false
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            totalMove = change.position - down.position
+                            val elapsedMillis = change.uptimeMillis - down.uptimeMillis
+                            if (!horizontalIntent && elapsedMillis >= viewConfiguration.longPressTimeoutMillis) {
+                                blockedByLongPress = true
+                                if (!loggedLongPressBlock) {
+                                    Log.d(
+                                        EditMoveTraceTag,
+                                        "swipeBlockedLongPress side=$side memo=${formatEditMemoForTrace(memo)} move=${formatOffsetForTrace(totalMove)} elapsed=$elapsedMillis"
+                                    )
+                                    loggedLongPressBlock = true
+                                }
+                            }
+                            val absX = kotlin.math.abs(totalMove.x)
+                            val absY = kotlin.math.abs(totalMove.y)
+                            if (!horizontalIntent && !verticalIntent && !blockedByLongPress) {
+                                when {
+                                    absX > viewConfiguration.touchSlop && absX > absY * 0.8f -> {
+                                        horizontalIntent = true
+                                        change.consume()
+                                        Log.d(
+                                            EditMoveTraceTag,
+                                            "swipeHorizontalIntent side=$side memo=${formatEditMemoForTrace(memo)} move=${formatOffsetForTrace(totalMove)} elapsed=$elapsedMillis"
+                                        )
+                                    }
+                                    absY > viewConfiguration.touchSlop && absY > absX * 1.35f -> {
+                                        verticalIntent = true
+                                        Log.d(
+                                            EditMoveTraceTag,
+                                            "swipeVerticalIntent side=$side memo=${formatEditMemoForTrace(memo)} move=${formatOffsetForTrace(totalMove)} elapsed=$elapsedMillis"
+                                        )
+                                    }
+                                }
+                            }
+                            if (horizontalIntent && latestSwipeEnabled) {
+                                change.consume()
+                            }
+                            if (
+                                !switched &&
+                                latestSwipeEnabled &&
+                                horizontalIntent &&
+                                !verticalIntent &&
+                                !blockedByLongPress &&
+                                absX > swipeThresholdPx
+                            ) {
+                                switched = true
+                                change.consume()
+                                val direction = if (totalMove.x < 0f) "Left" else "Right"
+                                Log.d(
+                                    EditMoveTraceTag,
+                                    "swipeSwitch side=$side direction=$direction memo=${formatEditMemoForTrace(memo)} move=${formatOffsetForTrace(totalMove)} elapsed=$elapsedMillis"
+                                )
+                                if (totalMove.x < 0f) {
+                                    latestOnSwipeLeft()
+                                } else {
+                                    latestOnSwipeRight()
+                                }
+                            }
+                            if (!change.pressed) break
+                        }
+                        if (!switched && totalMove.getDistance() > viewConfiguration.touchSlop) {
+                            Log.d(
+                                EditMoveTraceTag,
+                                "swipeNoSwitch side=$side memo=${formatEditMemoForTrace(memo)} move=${formatOffsetForTrace(totalMove)} enabled=$latestSwipeEnabled horizontal=$horizontalIntent vertical=$verticalIntent longPress=$blockedByLongPress"
+                            )
+                        }
+                    }
+                }
                 .onGloballyPositioned { onPanePositioned(it.boundsInWindow()) },
             shape = RoundedCornerShape(10.dp),
             border = BorderStroke(if (dropActive) 3.dp else 1.dp, if (dropActive) labelColor else Color(0xFFD5D5D5)),
@@ -8220,14 +8411,32 @@ private fun EditMoveEntryRow(
             .pointerInput(memo.id, entry.id, side) {
                 detectDragGesturesAfterLongPress(
                     onDragStart = { start ->
-                        rowBounds?.let { onDragStart(memo, entry, start, it) }
+                        val bounds = rowBounds
+                        Log.d(
+                            EditMoveTraceTag,
+                            "rowLongPressDragStart side=$side memo=${formatEditMemoForTrace(memo)} entry=${formatEditEntryForTrace(entry)} start=${formatOffsetForTrace(start)} rowBounds=${formatRectForTrace(bounds)}"
+                        )
+                        if (bounds != null) {
+                            onDragStart(memo, entry, start, bounds)
+                        } else {
+                            Log.d(
+                                EditMoveTraceTag,
+                                "rowLongPressDragStartIgnored reason=noBounds side=$side entry=${formatEditEntryForTrace(entry)}"
+                            )
+                        }
                     },
                     onDrag = { change, amount ->
                         change.consume()
                         onDrag(amount)
                     },
-                    onDragEnd = onDragEnd,
-                    onDragCancel = onDragCancel
+                    onDragEnd = {
+                        Log.d(EditMoveTraceTag, "rowLongPressDragEnd side=$side entry=${formatEditEntryForTrace(entry)}")
+                        onDragEnd()
+                    },
+                    onDragCancel = {
+                        Log.d(EditMoveTraceTag, "rowLongPressDragCancel side=$side entry=${formatEditEntryForTrace(entry)}")
+                        onDragCancel()
+                    }
                 )
             }
             .padding(horizontal = 8.dp, vertical = 7.dp),
