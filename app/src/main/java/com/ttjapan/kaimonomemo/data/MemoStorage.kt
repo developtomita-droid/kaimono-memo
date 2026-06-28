@@ -12,6 +12,7 @@ private const val PREF_MEMOS = "memos"
 private const val PREF_ONE_HAND_MODE = "one_hand_mode_enabled"
 private const val PREF_SIMPLE_MODE = "simple_mode_enabled"
 private const val PREF_LEFT_HAND_MODE = "left_hand_mode_enabled"
+private const val PREF_LARGE_FONT = "large_font_enabled"
 private const val PREF_MIC_START_ON_LAUNCH = "mic_start_on_launch"
 private const val PREF_MIC_STOP_TIMEOUT_MINUTES = "mic_stop_timeout_minutes"
 private const val PREF_MIC_DISABLED = "mic_disabled"
@@ -142,6 +143,18 @@ fun saveLeftHandModeEnabled(context: Context, enabled: Boolean) {
     context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         .edit()
         .putBoolean(PREF_LEFT_HAND_MODE, enabled)
+        .apply()
+}
+
+fun loadLargeFontEnabled(context: Context): Boolean {
+    return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_LARGE_FONT, false)
+}
+
+fun saveLargeFontEnabled(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_LARGE_FONT, enabled)
         .apply()
 }
 

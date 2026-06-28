@@ -3,6 +3,7 @@ package com.ttjapan.kaimonomemo.ui.app
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.util.Log
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -94,6 +95,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -104,6 +106,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -147,6 +151,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
@@ -161,10 +166,12 @@ import com.ttjapan.kaimonomemo.data.loadOneHandModeEnabled
 import com.ttjapan.kaimonomemo.data.loadSimpleModeEnabled
 import com.ttjapan.kaimonomemo.data.loadHomeTitlePattern
 import com.ttjapan.kaimonomemo.data.loadEditHelpVisible
+import com.ttjapan.kaimonomemo.data.loadLargeFontEnabled
 import com.ttjapan.kaimonomemo.data.loadSupportAdWatchDate
 import com.ttjapan.kaimonomemo.data.loadTemporaryTitlePattern
 import com.ttjapan.kaimonomemo.data.saveLeftHandModeEnabled
 import com.ttjapan.kaimonomemo.data.saveEditHelpVisible
+import com.ttjapan.kaimonomemo.data.saveLargeFontEnabled
 import com.ttjapan.kaimonomemo.data.saveMicrophoneSettings
 import com.ttjapan.kaimonomemo.data.saveMemos
 import com.ttjapan.kaimonomemo.data.saveOneHandModeEnabled
@@ -304,9 +311,73 @@ private const val TemporaryMemoId = "temporary-shopping-memo"
 private const val TemporaryMemoTitle = "テンポラリ"
 private const val SimpleTemporaryMemoTitle = "お買い物リスト"
 private val TrashTabSelectedColor = Color(0xFFE91E63)
+private val HomeTitleHeaderHeight = 52.dp
+private val HomeProgressBarHeight = 44.dp
+private const val HomeCarouselTraceTag = "HomeCarouselTrace"
 private val CompletedEntryBackground = Color(0xFFE8E8E8)
 
+private data class AppFontSizes(
+    val listText: TextUnit,
+    val listLineHeight: TextUnit,
+    val listAction: TextUnit,
+    val listPlaceholder: TextUnit,
+    val settingsTitle: TextUnit,
+    val settingsBody: TextUnit,
+    val settingsBodyLineHeight: TextUnit,
+    val settingsValue: TextUnit,
+    val editEntry: TextUnit,
+    val editEntryLineHeight: TextUnit,
+    val editHelpTitle: TextUnit,
+    val editHelpBody: TextUnit,
+    val editHelpLineHeight: TextUnit
+)
+
+private fun appFontSizes(large: Boolean): AppFontSizes {
+    return if (large) {
+        AppFontSizes(
+            listText = 23.sp,
+            listLineHeight = 28.sp,
+            listAction = 18.sp,
+            listPlaceholder = 21.sp,
+            settingsTitle = 20.sp,
+            settingsBody = 16.sp,
+            settingsBodyLineHeight = 21.sp,
+            settingsValue = 18.sp,
+            editEntry = 18.sp,
+            editEntryLineHeight = 22.sp,
+            editHelpTitle = 19.sp,
+            editHelpBody = 15.sp,
+            editHelpLineHeight = 19.sp
+        )
+    } else {
+        AppFontSizes(
+            listText = 20.sp,
+            listLineHeight = 24.sp,
+            listAction = 16.sp,
+            listPlaceholder = 18.sp,
+            settingsTitle = 17.sp,
+            settingsBody = 13.sp,
+            settingsBodyLineHeight = 18.sp,
+            settingsValue = 16.sp,
+            editEntry = 15.sp,
+            editEntryLineHeight = 18.sp,
+            editHelpTitle = 16.sp,
+            editHelpBody = 12.sp,
+            editHelpLineHeight = 15.sp
+        )
+    }
+}
+
+private val LocalAppFontSizes = staticCompositionLocalOf { appFontSizes(false) }
+
 private fun isTemporaryMemo(memo: ShoppingMemo): Boolean = memo.id == TemporaryMemoId
+
+private fun formatMemoOrderForTrace(memos: List<ShoppingMemo>): String {
+    return memos.mapIndexed { index, memo ->
+        val title = memo.title.ifBlank { "(blank)" }
+        "${index + 1}:$title#${memo.id.takeLast(6)}"
+    }.joinToString(" > ")
+}
 
 private fun temporaryTitleForMode(simpleModeEnabled: Boolean): String {
     return if (simpleModeEnabled) SimpleTemporaryMemoTitle else TemporaryMemoTitle
@@ -418,6 +489,7 @@ fun ShoppingMemoApp() {
     var leftHandModeEnabled by remember { mutableStateOf(loadLeftHandModeEnabled(context)) }
     var microphoneSettings by remember { mutableStateOf(loadMicrophoneSettings(context)) }
     var editHelpVisible by remember { mutableStateOf(loadEditHelpVisible(context)) }
+    var largeFontEnabled by remember { mutableStateOf(loadLargeFontEnabled(context)) }
     var homeTopScrollRequest by remember { mutableStateOf(0) }
     var supportAdVideoVisible by remember { mutableStateOf(false) }
     val recentlyMovedEntryIds = remember { mutableStateListOf<String>() }
@@ -434,14 +506,23 @@ fun ShoppingMemoApp() {
         if (orderedActiveIds.size != currentActive.size || orderedActiveIds.toSet() != currentActive.map { it.id }.toSet()) return
         val orderedActive = orderedActiveIds.mapNotNull { id -> currentActive.firstOrNull { it.id == id } }
         if (orderedActive.size != currentActive.size) return
-        var activeIndex = 0
-        memos.indices.forEach { index ->
-            val memo = memos[index]
-            if (!isTemporaryMemo(memo) && !memo.trashed) {
-                memos[index] = orderedActive[activeIndex]
-                activeIndex++
+        Log.d(
+            HomeCarouselTraceTag,
+            "parent applyMemoOrder before active=${formatMemoOrderForTrace(currentActive)} requested=${orderedActiveIds.joinToString(" > ") { id -> currentActive.firstOrNull { it.id == id }?.let { memo -> "${memo.title.ifBlank { "(blank)" }}#${memo.id.takeLast(6)}" } ?: id.takeLast(6) }}"
+        )
+        Snapshot.withMutableSnapshot {
+            var activeIndex = 0
+            memos.indices.forEach { index ->
+                val memo = memos[index]
+                if (!isTemporaryMemo(memo) && !memo.trashed) {
+                    memos[index] = orderedActive[activeIndex++]
+                }
             }
         }
+        Log.d(
+            HomeCarouselTraceTag,
+            "parent applyMemoOrder after active=${formatMemoOrderForTrace(memos.filter { !isTemporaryMemo(it) && !it.trashed })}"
+        )
         persist()
     }
 
@@ -458,6 +539,10 @@ fun ShoppingMemoApp() {
     fun updateLeftHandMode(enabled: Boolean) {
         leftHandModeEnabled = enabled
         saveLeftHandModeEnabled(context, enabled)
+    }
+    fun updateLargeFont(enabled: Boolean) {
+        largeFontEnabled = enabled
+        saveLargeFontEnabled(context, enabled)
     }
     fun updateMicrophoneSettings(settings: MicrophoneSettings) {
         microphoneSettings = settings
@@ -547,34 +632,35 @@ fun ShoppingMemoApp() {
         currentScreen = Screen.Settings
     }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        bottomBar = {
-            if (!supportAdVideoVisible) {
-                BottomIconBar(
-                    screen = when (currentScreen) {
-                        Screen.MicrophoneSettings -> Screen.Settings
-                        Screen.TitlePatternPicker -> titlePatternReturnScreen
-                        else -> currentScreen
-                    },
-                    onHome = {
-                        if (currentScreen == Screen.Detail) finishDetail() else currentScreen = Screen.Home
-                    },
-                    onEdit = { currentScreen = Screen.Edit },
-                    onSettings = { currentScreen = Screen.Settings },
-                    onFavorite = { currentScreen = Screen.Favorites },
-                    onAds = { currentScreen = Screen.Ads }
-                )
+    CompositionLocalProvider(LocalAppFontSizes provides appFontSizes(largeFontEnabled)) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            bottomBar = {
+                if (!supportAdVideoVisible) {
+                    BottomIconBar(
+                        screen = when (currentScreen) {
+                            Screen.MicrophoneSettings -> Screen.Settings
+                            Screen.TitlePatternPicker -> titlePatternReturnScreen
+                            else -> currentScreen
+                        },
+                        onHome = {
+                            if (currentScreen == Screen.Detail) finishDetail() else currentScreen = Screen.Home
+                        },
+                        onEdit = { currentScreen = Screen.Edit },
+                        onSettings = { currentScreen = Screen.Settings },
+                        onFavorite = { currentScreen = Screen.Favorites },
+                        onAds = { currentScreen = Screen.Ads }
+                    )
+                }
             }
-        }
-    ) { innerPadding ->
-        Surface(
-            modifier = Modifier
-                .padding(innerPadding)
-                .fillMaxSize(),
-            color = Color.White
-        ) {
-            when (currentScreen) {
+        ) { innerPadding ->
+            Surface(
+                modifier = Modifier
+                    .padding(innerPadding)
+                    .fillMaxSize(),
+                color = Color.White
+            ) {
+                when (currentScreen) {
                 Screen.Home -> {
                     if (simpleModeEnabled) {
                         MemoDetailScreen(
@@ -702,6 +788,8 @@ fun ShoppingMemoApp() {
                     onSimpleModeChanged = ::updateSimpleMode,
                     leftHandModeEnabled = leftHandModeEnabled,
                     onLeftHandModeChanged = ::updateLeftHandMode,
+                    largeFontEnabled = largeFontEnabled,
+                    onLargeFontChanged = ::updateLargeFont,
                     microphoneOperationEnabled = microphoneSettings.operationEnabled,
                     onOpenMicrophoneSettings = { currentScreen = Screen.MicrophoneSettings },
                     onResetOperationHelp = { updateEditHelpVisible(true) }
@@ -720,6 +808,7 @@ fun ShoppingMemoApp() {
             }
         }
     }
+}
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -767,6 +856,11 @@ private fun AdvancedHomeScreen(
     var homeDragStartOrderIds by remember { mutableStateOf<List<String>>(emptyList()) }
     var homeCarouselSettleTargetId by remember { mutableStateOf<String?>(null) }
     var homeCarouselSettleSerial by remember { mutableStateOf(0) }
+    var homeDropTraceSerial by remember { mutableStateOf(0) }
+    var homeOrderSourceSyncPaused by remember { mutableStateOf(false) }
+    var homeExpectedOrderAfterDropIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    var homeIgnoreNextDragCancel by remember { mutableStateOf(false) }
+    var homeIgnoreNextDragCancelSerial by remember { mutableStateOf(0) }
     var imageChangeBounds by remember { mutableStateOf<Rect?>(null) }
     var cardTrashBounds by remember { mutableStateOf<Rect?>(null) }
     var pendingImageMemo by remember { mutableStateOf<ShoppingMemo?>(null) }
@@ -805,6 +899,30 @@ private fun AdvancedHomeScreen(
         val byId = memos.associateBy { it.id }
         val ordered = homeMemoOrderIds.mapNotNull { byId[it] }
         if (ordered.size == memos.size) ordered else memos
+    }
+    val latestOrderedHomeMemoIds by rememberUpdatedState(orderedHomeMemos.map { it.id })
+
+    fun formatHomeMemoId(id: String?): String {
+        if (id == null) return "null"
+        val title = memos.firstOrNull { it.id == id }?.title?.ifBlank { "(blank)" } ?: "(missing)"
+        return "$title#${id.takeLast(6)}"
+    }
+
+    fun formatHomeMemoOrder(orderIds: List<String>): String {
+        return orderIds.mapIndexed { index, id ->
+            "${index + 1}:${formatHomeMemoId(id)}"
+        }.joinToString(" > ")
+    }
+
+    fun logHomeMemoOrder(label: String, orderIds: List<String>) {
+        Log.d(
+            HomeCarouselTraceTag,
+            "$label count=${orderIds.size} selected=${formatHomeMemoId(homeCarouselSelectedMemoId)} order=${formatHomeMemoOrder(orderIds)}"
+        )
+    }
+
+    fun hasSameHomeMemoSet(left: List<String>, right: List<String>): Boolean {
+        return left.size == right.size && left.toSet() == right.toSet()
     }
 
     fun stopHomeVoiceScroll() {
@@ -876,20 +994,86 @@ private fun AdvancedHomeScreen(
         }
     }
 
-    LaunchedEffect(sourceMemoIds, draggingId) {
+    LaunchedEffect(sourceMemoIds, draggingId, homeOrderSourceSyncPaused) {
+        if (homeOrderSourceSyncPaused) {
+            val expectedOrder = homeExpectedOrderAfterDropIds
+            val localOrder = homeMemoOrderIds.toList()
+            Log.d(
+                HomeCarouselTraceTag,
+                "sourceSync paused dragging=${formatHomeMemoId(draggingId)} source=${formatHomeMemoOrder(sourceMemoIds)} local=${formatHomeMemoOrder(localOrder)} expected=${formatHomeMemoOrder(expectedOrder)}"
+            )
+            if (
+                expectedOrder.isNotEmpty() &&
+                sourceMemoIds == expectedOrder &&
+                localOrder != expectedOrder &&
+                hasSameHomeMemoSet(localOrder, expectedOrder)
+            ) {
+                Log.d(
+                    HomeCarouselTraceTag,
+                    "sourceSync restoreLocalToExpected reason=paused-source-confirmed before=${formatHomeMemoOrder(localOrder)} after=${formatHomeMemoOrder(expectedOrder)}"
+                )
+                homeMemoOrderIds.clear()
+                homeMemoOrderIds.addAll(expectedOrder)
+            }
+            return@LaunchedEffect
+        }
         if (draggingId == null) {
-            val hasSameMemos = homeMemoOrderIds.size == sourceMemoIds.size &&
-                homeMemoOrderIds.toSet() == sourceMemoIds.toSet()
-            if (!hasSameMemos) {
+            val localOrder = homeMemoOrderIds.toList()
+            val hasSameOrder = localOrder == sourceMemoIds
+            if (!hasSameOrder) {
+                Log.d(
+                    HomeCarouselTraceTag,
+                    "sourceSync applySource dragging=null source=${formatHomeMemoOrder(sourceMemoIds)} local=${formatHomeMemoOrder(localOrder)}"
+                )
                 homeMemoOrderIds.clear()
                 homeMemoOrderIds.addAll(sourceMemoIds)
             }
         } else {
+            val before = homeMemoOrderIds.toList()
             homeMemoOrderIds.removeAll { it !in sourceMemoIds }
             sourceMemoIds.forEach { id ->
                 if (id !in homeMemoOrderIds) homeMemoOrderIds.add(id)
             }
+            val after = homeMemoOrderIds.toList()
+            if (before != after) {
+                Log.d(
+                    HomeCarouselTraceTag,
+                    "sourceSync mergeDuringDrag dragging=${formatHomeMemoId(draggingId)} source=${formatHomeMemoOrder(sourceMemoIds)} before=${formatHomeMemoOrder(before)} after=${formatHomeMemoOrder(after)}"
+                )
+            }
         }
+    }
+
+    LaunchedEffect(homeOrderSourceSyncPaused) {
+        if (homeOrderSourceSyncPaused) {
+            withFrameNanos { }
+            delay(180)
+            Log.d(
+                HomeCarouselTraceTag,
+                "sourceSync pauseReleased expected=${formatHomeMemoOrder(homeExpectedOrderAfterDropIds)} local=${formatHomeMemoOrder(homeMemoOrderIds.toList())} source=${formatHomeMemoOrder(sourceMemoIds)}"
+            )
+            homeOrderSourceSyncPaused = false
+            homeExpectedOrderAfterDropIds = emptyList()
+        }
+    }
+
+    LaunchedEffect(homeIgnoreNextDragCancelSerial) {
+        if (homeIgnoreNextDragCancelSerial <= 0) return@LaunchedEffect
+        delay(350)
+        if (homeIgnoreNextDragCancel) {
+            Log.d(
+                HomeCarouselTraceTag,
+                "dragCancel ignoreWindowExpired local=${formatHomeMemoOrder(homeMemoOrderIds.toList())} expected=${formatHomeMemoOrder(homeExpectedOrderAfterDropIds)}"
+            )
+            homeIgnoreNextDragCancel = false
+        }
+    }
+
+    LaunchedEffect(homeDropTraceSerial) {
+        if (homeDropTraceSerial <= 0) return@LaunchedEffect
+        withFrameNanos { }
+        delay(80)
+        logHomeMemoOrder("renderedOrder afterDrop serial=$homeDropTraceSerial", latestOrderedHomeMemoIds)
     }
 
     LaunchedEffect(homeTopScrollRequest) {
@@ -988,27 +1172,40 @@ private fun AdvancedHomeScreen(
     }
 
     fun resetHomeMemoOrder() {
+        Log.d(
+            HomeCarouselTraceTag,
+            "resetHomeMemoOrder before source=${formatHomeMemoOrder(sourceMemoIds)} local=${formatHomeMemoOrder(homeMemoOrderIds.toList())} expected=${formatHomeMemoOrder(homeExpectedOrderAfterDropIds)}"
+        )
         homeMemoOrderIds.clear()
         homeMemoOrderIds.addAll(sourceMemoIds)
         homeMemoOrderChanged = false
         homeDragStartOrderIds = emptyList()
+        homeExpectedOrderAfterDropIds = emptyList()
+        homeOrderSourceSyncPaused = false
+        Log.d(
+            HomeCarouselTraceTag,
+            "resetHomeMemoOrder after local=${formatHomeMemoOrder(homeMemoOrderIds.toList())}"
+        )
     }
 
     fun finishHomeMemoDrag(swapCandidateId: String? = null) {
         val draggedMemoId = draggingId
         val memo = memos.firstOrNull { it.id == draggedMemoId }
+        val savedOrder = homeDragStartOrderIds
         val sourceMemoIdSet = sourceMemoIds.toSet()
         fun validOrderOrNull(order: List<String>): List<String>? {
             return order.takeIf { it.size == sourceMemoIds.size && it.toSet() == sourceMemoIdSet }
         }
+        Log.d(
+            HomeCarouselTraceTag,
+            "drop dragged=${formatHomeMemoId(draggedMemoId)} candidate=${formatHomeMemoId(swapCandidateId)}"
+        )
+        logHomeMemoOrder("drop savedOrder", savedOrder)
         when {
             memo != null && imageChangeBounds?.contains(dragPoint) == true -> pendingImageMemo = memo
             memo != null && cardTrashBounds?.contains(dragPoint) == true -> onDeleteMemo(memo)
             draggedMemoId != null && swapCandidateId != null && draggedMemoId != swapCandidateId -> {
-                // 切り分け用: ドロップ時のカード順序交換を一時停止する。
-                // ここを無効化してもちらつくなら、並び確定処理ではなくプレビュー/描画側が原因。
-                /*
-                val baseOrder = validOrderOrNull(homeDragStartOrderIds)
+                val baseOrder = validOrderOrNull(savedOrder)
                     ?: validOrderOrNull(homeMemoOrderIds.toList())
                     ?: sourceMemoIds
                 val draggedIndex = baseOrder.indexOf(draggedMemoId)
@@ -1020,14 +1217,26 @@ private fun AdvancedHomeScreen(
                     nextOrder[candidateIndex] = dragged
                     homeMemoOrderIds.clear()
                     homeMemoOrderIds.addAll(nextOrder)
+                    logHomeMemoOrder("drop appliedOrder", nextOrder)
+                    homeExpectedOrderAfterDropIds = nextOrder
+                    homeIgnoreNextDragCancel = true
+                    homeIgnoreNextDragCancelSerial++
+                    homeOrderSourceSyncPaused = true
                     homeCarouselSettleTargetId = swapCandidateId
                     homeCarouselSettleSerial++
+                    Log.d(
+                        HomeCarouselTraceTag,
+                        "drop commit begin expected=${formatHomeMemoOrder(homeExpectedOrderAfterDropIds)} ignoreCancelSerial=$homeIgnoreNextDragCancelSerial"
+                    )
                     onApplyMemoOrder(homeMemoOrderIds.toList())
                     onHomeCarouselSelected(swapCandidateId)
                 }
-                */
             }
         }
+        if (homeMemoOrderIds.isNotEmpty()) {
+            logHomeMemoOrder("drop currentOrderBeforeRender", homeMemoOrderIds.toList())
+        }
+        homeDropTraceSerial++
         draggingId = null
         dragOffset = Offset.Zero
         draggedCardBounds = null
@@ -1230,10 +1439,18 @@ private fun AdvancedHomeScreen(
                             val hasStableOrder = homeMemoOrderIds.size == sourceMemoIds.size &&
                                 homeMemoOrderIds.toSet() == sourceMemoIdSet
                             if (!hasStableOrder) {
+                                Log.d(
+                                    HomeCarouselTraceTag,
+                                    "dragStart initializeLocalFromSource reason=unstable source=${formatHomeMemoOrder(sourceMemoIds)} local=${formatHomeMemoOrder(homeMemoOrderIds.toList())}"
+                                )
                                 homeMemoOrderIds.clear()
                                 homeMemoOrderIds.addAll(sourceMemoIds)
                             }
+                            homeExpectedOrderAfterDropIds = emptyList()
+                            homeIgnoreNextDragCancel = false
                             homeDragStartOrderIds = homeMemoOrderIds.toList()
+                            Log.d(HomeCarouselTraceTag, "dragStart memo=${formatHomeMemoId(memo.id)}")
+                            logHomeMemoOrder("dragStart savedOrder", homeDragStartOrderIds)
                             draggingId = memo.id
                             dragOffset = Offset.Zero
                             draggedCardBounds = bounds
@@ -1247,11 +1464,27 @@ private fun AdvancedHomeScreen(
                         onAutoScrollTick = {},
                         onDragEnd = { swapCandidateId -> finishHomeMemoDrag(swapCandidateId) },
                         onDragCancel = {
-                            draggingId = null
-                            dragOffset = Offset.Zero
-                            draggedCardBounds = null
-                            homeDragStartOrderIds = emptyList()
-                            resetHomeMemoOrder()
+                            if (homeIgnoreNextDragCancel) {
+                                Log.d(
+                                    HomeCarouselTraceTag,
+                                    "dragCancel ignoredAfterDrop local=${formatHomeMemoOrder(homeMemoOrderIds.toList())} source=${formatHomeMemoOrder(sourceMemoIds)} expected=${formatHomeMemoOrder(homeExpectedOrderAfterDropIds)}"
+                                )
+                                homeIgnoreNextDragCancel = false
+                                draggingId = null
+                                dragOffset = Offset.Zero
+                                draggedCardBounds = null
+                                homeDragStartOrderIds = emptyList()
+                            } else {
+                                Log.d(
+                                    HomeCarouselTraceTag,
+                                    "dragCancel reset local=${formatHomeMemoOrder(homeMemoOrderIds.toList())} source=${formatHomeMemoOrder(sourceMemoIds)} expected=${formatHomeMemoOrder(homeExpectedOrderAfterDropIds)}"
+                                )
+                                draggingId = null
+                                dragOffset = Offset.Zero
+                                draggedCardBounds = null
+                                homeDragStartOrderIds = emptyList()
+                                resetHomeMemoOrder()
+                            }
                         },
                         onOpenMemo = onOpenMemo,
                         onToggleFavorite = onToggleFavorite,
@@ -1484,6 +1717,7 @@ private fun HomeItemsPage(
         onToggleFavorite = onToggleFavorite,
         onAddMemo = onAddMemo,
         onShowTrash = onShowTrash,
+        onOpenTemporaryMemo = onOpenTemporaryMemo,
         showCardDropTargets = showCardDropTargets,
         imageTargetActive = imageTargetActive,
         trashTargetActive = trashTargetActive,
@@ -1512,6 +1746,7 @@ private fun HomeMemoCarouselPage(
     onToggleFavorite: (ShoppingMemo) -> Unit,
     onAddMemo: () -> Unit,
     onShowTrash: () -> Unit,
+    onOpenTemporaryMemo: () -> Unit,
     showCardDropTargets: Boolean,
     imageTargetActive: Boolean,
     trashTargetActive: Boolean,
@@ -1557,6 +1792,18 @@ private fun HomeMemoCarouselPage(
     val dragVector = if (dragStartPoint == null) Offset.Zero else dragPoint - dragStartPoint
     val dragDistance = kotlin.math.sqrt(dragVector.x * dragVector.x + dragVector.y * dragVector.y)
 
+    fun traceMemoId(id: String?): String {
+        if (id == null) return "null"
+        val title = memos.firstOrNull { it.id == id }?.title?.ifBlank { "(blank)" } ?: "(missing)"
+        return "$title#${id.takeLast(6)}"
+    }
+
+    fun traceCarouselOrder(): String {
+        return memos.mapIndexed { index, memo ->
+            "${index + 1}:${memo.title.ifBlank { "(blank)" }}#${memo.id.takeLast(6)}"
+        }.joinToString(" > ")
+    }
+
     val dragSwapCandidateId = if (
         draggingId != null &&
         dragStartPoint != null &&
@@ -1595,7 +1842,17 @@ private fun HomeMemoCarouselPage(
     }
 
     LaunchedEffect(memoIdKey, selectedMemoId) {
-        if (carouselDragging || hasPendingSettle) return@LaunchedEffect
+        if (carouselDragging || hasPendingSettle) {
+            Log.d(
+                HomeCarouselTraceTag,
+                "carousel selectedEffect skipped dragging=$carouselDragging pending=$hasPendingSettle selected=${traceMemoId(selectedMemoId)} offset=${carouselOffset.value} order=${traceCarouselOrder()}"
+            )
+            return@LaunchedEffect
+        }
+        Log.d(
+            HomeCarouselTraceTag,
+            "carousel selectedEffect apply selected=${traceMemoId(selectedMemoId)} offsetBefore=${carouselOffset.value} order=${traceCarouselOrder()}"
+        )
         if (count == 0) {
             carouselOffset.snapTo(0f)
         } else {
@@ -1606,10 +1863,18 @@ private fun HomeMemoCarouselPage(
                 carouselOffset.snapTo(carouselOffset.value.coerceIn(-count.toFloat(), count.toFloat()))
             }
         }
+        Log.d(
+            HomeCarouselTraceTag,
+            "carousel selectedEffect after offset=${carouselOffset.value} front=${traceMemoId(selectedMemoIdForOffset(carouselOffset.value))}"
+        )
     }
 
     LaunchedEffect(draggingId) {
         if (draggingId == null) {
+            Log.d(
+                HomeCarouselTraceTag,
+                "carousel draggingEffect clear offsetBefore=${carouselOffset.value} selected=${traceMemoId(selectedMemoId)} pending=$hasPendingSettle order=${traceCarouselOrder()}"
+            )
             confirmedDragSwapCandidateId = null
             dragAllowedSwapCandidateId = null
             dragStartWindowPoint = null
@@ -1623,25 +1888,50 @@ private fun HomeMemoCarouselPage(
                 }
             }
             carouselDragging = false
+            Log.d(
+                HomeCarouselTraceTag,
+                "carousel draggingEffect cleared offsetAfter=${carouselOffset.value} front=${traceMemoId(selectedMemoIdForOffset(carouselOffset.value))}"
+            )
+        } else {
+            Log.d(
+                HomeCarouselTraceTag,
+                "carousel draggingEffect active dragging=${traceMemoId(draggingId)} selected=${traceMemoId(selectedMemoId)} offset=${carouselOffset.value} order=${traceCarouselOrder()}"
+            )
         }
     }
 
     LaunchedEffect(settleSerial, settleTargetId, memoIdKey) {
         if (settleSerial > 0 && settleTargetIndex >= 0) {
+            Log.d(
+                HomeCarouselTraceTag,
+                "carousel settle serial=$settleSerial target=${traceMemoId(settleTargetId)} index=$settleTargetIndex offsetBefore=${carouselOffset.value} order=${traceCarouselOrder()}"
+            )
             carouselOffset.snapTo(-settleTargetIndex.toFloat())
             handledSettleSerial = settleSerial
             carouselDragging = false
+            Log.d(
+                HomeCarouselTraceTag,
+                "carousel settle after serial=$settleSerial offset=${carouselOffset.value} front=${traceMemoId(selectedMemoIdForOffset(carouselOffset.value))}"
+            )
         }
     }
 
     LaunchedEffect(dragSwapCandidateId) {
         val candidateId = dragSwapCandidateId
+        Log.d(
+            HomeCarouselTraceTag,
+            "carousel candidate changed candidate=${traceMemoId(candidateId)} confirmed=${traceMemoId(confirmedDragSwapCandidateId)} allowed=${traceMemoId(dragAllowedSwapCandidateId)} dragging=${traceMemoId(draggingId)} dragDistance=$dragDistance"
+        )
         if (draggingId != null && candidateId != null && confirmedDragSwapCandidateId == null) {
             confirmedDragSwapCandidateId = candidateId
         }
     }
 
     LaunchedEffect(activeDragSwapCandidateId, draggingId, memoIdKey) {
+        Log.d(
+            HomeCarouselTraceTag,
+            "carousel previewEffect active=${traceMemoId(activeDragSwapCandidateId)} dragging=${traceMemoId(draggingId)} order=${traceCarouselOrder()}"
+        )
         if (draggingId != null && activeDragSwapCandidateId != null) {
             swapPreviewProgress.animateTo(
                 targetValue = 1f,
@@ -1743,6 +2033,16 @@ private fun HomeMemoCarouselPage(
             )
         }
 
+        HomeCarouselOrbitGuide(
+            centerX = orbitCenterX,
+            centerY = orbitCenterY,
+            radiusX = radiusX,
+            radiusY = radiusY,
+            modifier = Modifier
+                .matchParentSize()
+                .zIndex(1f)
+        )
+
         if (count == 0) {
             Box(
                 modifier = Modifier
@@ -1805,6 +2105,10 @@ private fun HomeMemoCarouselPage(
                                                 dragStartWindowPoint = cardBounds?.let { bounds ->
                                                     Offset(bounds.left + start.x, bounds.top + start.y)
                                                 }
+                                                Log.d(
+                                                    HomeCarouselTraceTag,
+                                                    "carousel cardDragStart memo=${traceMemoId(memo.id)} index=$index allowed=${traceMemoId(dragAllowedSwapCandidateId)} start=$start windowStart=$dragStartWindowPoint offset=${carouselOffset.value} order=${traceCarouselOrder()}"
+                                                )
                                                 onSelectedMemoChanged(memo.id)
                                                 onDragStart(memo, start, cardBounds)
                                             },
@@ -1814,9 +2118,17 @@ private fun HomeMemoCarouselPage(
                                             },
                                             onDragEnd = {
                                                 val swapCandidateId = latestConfirmedDragSwapCandidateId ?: latestDragSwapCandidateId
+                                                Log.d(
+                                                    HomeCarouselTraceTag,
+                                                    "carousel cardDragEnd memo=${traceMemoId(memo.id)} confirmed=${traceMemoId(latestConfirmedDragSwapCandidateId)} latest=${traceMemoId(latestDragSwapCandidateId)} chosen=${traceMemoId(swapCandidateId)} offset=${carouselOffset.value} order=${traceCarouselOrder()}"
+                                                )
                                                 onDragEnd(swapCandidateId)
                                             },
                                             onDragCancel = {
+                                                Log.d(
+                                                    HomeCarouselTraceTag,
+                                                    "carousel cardDragCancel memo=${traceMemoId(memo.id)} confirmed=${traceMemoId(latestConfirmedDragSwapCandidateId)} latest=${traceMemoId(latestDragSwapCandidateId)} offset=${carouselOffset.value} order=${traceCarouselOrder()}"
+                                                )
                                                 onDragCancel()
                                                 carouselDragging = false
                                             }
@@ -1887,6 +2199,7 @@ private fun HomeMemoCarouselPage(
 
         if (count > 0) {
             val controlWidth = (maxWidth * 0.34f).coerceIn(104.dp, 150.dp)
+            val memoButtonSize = (controlWidth * 0.68f).coerceIn(68.dp, 92.dp)
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -1901,9 +2214,64 @@ private fun HomeMemoCarouselPage(
                     modifier = Modifier.size(86.dp)
                 )
                 Spacer(Modifier.height(10.dp))
-                AddMemoCard(compact = true, onClick = onAddMemo)
-            }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                ) {
+                    HomeMemoButton(
+                        onClick = onOpenTemporaryMemo,
+                        modifier = Modifier
+                            .size(memoButtonSize)
+                            .align(Alignment.TopStart)
+                            .offset(
+                                x = -(memoButtonSize * 0.62f),
+                                y = -(memoButtonSize * 0.62f)
+                            )
+                            .zIndex(1f)
+                    )
+                    AddMemoCard(
+                        compact = true,
+                        onClick = onAddMemo,
+                        modifier = Modifier
+                            .matchParentSize()
+                            .align(Alignment.BottomEnd)
+                    )
+                }
+                }
         }
+    }
+    }
+@Composable
+private fun HomeCarouselOrbitGuide(
+    centerX: Dp,
+    centerY: Dp,
+    radiusX: Dp,
+    radiusY: Dp,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val cx = centerX.toPx()
+        val cy = centerY.toPx()
+        val rx = radiusX.toPx()
+        val ry = radiusY.toPx()
+
+        fun drawRing(scale: Float, color: Color, strokeWidth: Dp) {
+            val scaledRx = rx * scale
+            val scaledRy = ry * scale
+            drawOval(
+                color = color,
+                topLeft = Offset(cx - scaledRx, cy - scaledRy),
+                size = Size(scaledRx * 2f, scaledRy * 2f),
+                style = Stroke(width = strokeWidth.toPx())
+            )
+        }
+
+        drawRing(
+            scale = 1f,
+            color = Color(0xFF6B6B6B).copy(alpha = 0.22f),
+            strokeWidth = 5.dp
+        )
     }
 }
 
@@ -1950,7 +2318,7 @@ private fun HomeSelectedMemoBackdrop(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(44.dp)
+                .height(HomeProgressBarHeight)
                 .background(Color.Black)
         ) {
             Box(
@@ -2006,7 +2374,7 @@ private fun HomeSelectedMemoBackdropRow(
             .fillMaxWidth()
             .heightIn(min = 56.dp)
             .background(rowBackground)
-            .padding(horizontal = 14.dp, vertical = 6.dp),
+            .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -2032,7 +2400,9 @@ private fun HomeSelectedMemoBackdropRow(
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
             textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = 12.dp)
         )
     }
     Divider(color = Color(0xFFE0E0E0))
@@ -2979,7 +3349,7 @@ private fun MemoCard(
                 IconButton(
                     onClick = onToggleFavorite,
                     modifier = Modifier
-                        .align(Alignment.TopStart)
+                        .align(Alignment.TopEnd)
                         .padding(3.dp)
                         .size(34.dp)
                         .background(Color.White.copy(alpha = 0.9f), CircleShape)
@@ -3017,11 +3387,20 @@ private fun MemoCard(
 }
 
 @Composable
-private fun AddMemoCard(compact: Boolean, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier
+private fun AddMemoCard(
+    compact: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val cardModifier = if (compact) {
+        modifier.aspectRatio(1f)
+    } else {
+        modifier
             .fillMaxWidth()
-            .height(if (compact) 150.dp else 300.dp)
+            .height(300.dp)
+    }
+    Card(
+        modifier = cardModifier
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
@@ -3030,6 +3409,53 @@ private fun AddMemoCard(compact: Boolean, onClick: () -> Unit) {
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("+", color = Color(0xFF1976D2), fontSize = if (compact) 64.sp else 96.sp)
+        }
+    }
+}
+
+@Composable
+private fun HomeMemoButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 5.dp),
+        border = BorderStroke(1.dp, Color(0xFFF9A825)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEE88))
+    ) {
+        Box(Modifier.fillMaxSize()) {
+            Text(
+                text = "\u30E1\u30E2",
+                modifier = Modifier.align(Alignment.Center),
+                color = Color(0xFF3A3124),
+                fontSize = 24.sp,
+                lineHeight = 26.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+            Canvas(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(22.dp)
+            ) {
+                val foldPath = Path().apply {
+                    moveTo(size.width, 0f)
+                    lineTo(size.width, size.height)
+                    lineTo(0f, size.height)
+                    close()
+                }
+                drawPath(
+                    path = foldPath,
+                    color = Color(0xFFFFD54F)
+                )
+                drawPath(
+                    path = foldPath,
+                    color = Color(0xFFEF9A9A).copy(alpha = 0.55f),
+                    style = Stroke(width = 1.5.dp.toPx())
+                )
+            }
         }
     }
 }
@@ -3373,7 +3799,7 @@ private fun TitlePatternHeader(
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
+                .height(HomeTitleHeaderHeight)
         ) {
             Box(
                 modifier = Modifier
@@ -4364,7 +4790,7 @@ private fun MemoDetailScreen(
                 onChanged = onChanged
             )
             Divider(color = Color(0xFFE0E0E0))
-            Row(modifier = Modifier.fillMaxWidth().height(50.dp)) {
+            Row(modifier = Modifier.fillMaxWidth().height(HomeProgressBarHeight)) {
                 tabs.forEachIndexed { index, title ->
                     val selected = pagerState.currentPage == index
                     val selectedTrashTab = selected && index == 1
@@ -4525,7 +4951,7 @@ private fun DetailTitleArea(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 20.dp)
+                        .padding(horizontal = 14.dp, vertical = 0.dp)
                 ) {
                     if (memo.title.isBlank()) {
                         Text("タイトルを入力してください", color = Color(0xFFC0C4CC), fontSize = 24.sp)
@@ -4580,8 +5006,8 @@ private fun DetailTitleArea(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                .height(HomeTitleHeaderHeight)
+                .padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             content = titleInput
         )
@@ -5455,6 +5881,7 @@ private fun ShoppingEntryRow(
     onDeleteSwipeEnd: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
+    val sizes = LocalAppFontSizes.current
     val canDrag = entry.name.isNotBlank()
     var fieldValue by remember(entry.id) { mutableStateOf(TextFieldValue(entry.name)) }
     var textLayoutResult by remember(entry.id) { mutableStateOf<TextLayoutResult?>(null) }
@@ -5541,7 +5968,8 @@ private fun ShoppingEntryRow(
                     maxLines = 8,
                     onTextLayout = { textLayoutResult = it },
                     textStyle = TextStyle(
-                        fontSize = 20.sp,
+                        fontSize = sizes.listText,
+                        lineHeight = sizes.listLineHeight,
                         color = Color.Black,
                         textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None
                     ),
@@ -5549,7 +5977,7 @@ private fun ShoppingEntryRow(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     decorationBox = { innerTextField ->
                         if (entry.name.isBlank()) {
-                            Text("未入力", color = Color(0xFF9E9E9E), fontSize = 20.sp)
+                            Text("未入力", color = Color(0xFF9E9E9E), fontSize = sizes.listText)
                         }
                         innerTextField()
                     }
@@ -5563,7 +5991,7 @@ private fun ShoppingEntryRow(
                 Text(
                     text = if (isDeleteSwiping) "→ 🗑" else "完了",
                     color = if (isDeleteSwiping) Color(0xFFD32F2F) else if (entry.name.isBlank()) Color(0xFFBBBBBB) else Color(0xFF1976D2),
-                    fontSize = 16.sp,
+                    fontSize = sizes.listAction,
                     fontWeight = if (isDeleteSwiping) FontWeight.Bold else FontWeight.Normal
                 )
             }
@@ -5641,6 +6069,7 @@ private fun DoneEntryRow(
     onDeleteSwipeDrag: (Float, Float) -> Unit,
     onDeleteSwipeEnd: () -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     val swipeModifier = swipeToTrashModifier(
         key = "done-${entry.id}",
         enabled = entry.name.isNotBlank(),
@@ -5671,7 +6100,8 @@ private fun DoneEntryRow(
         Text(
             text = entry.name,
             color = Color(0xFF777777),
-            fontSize = 20.sp,
+            fontSize = sizes.listText,
+            lineHeight = sizes.listLineHeight,
             fontWeight = FontWeight.Bold,
             textDecoration = TextDecoration.LineThrough,
             modifier = Modifier
@@ -5686,7 +6116,7 @@ private fun DoneEntryRow(
             Text(
                 text = "→ 🗑",
                 color = Color(0xFFD32F2F),
-                fontSize = 16.sp,
+                fontSize = sizes.listAction,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(horizontal = 8.dp)
             )
@@ -5697,8 +6127,9 @@ private fun DoneEntryRow(
 
 @Composable
 private fun RestoreIconButton(onClick: () -> Unit) {
+    val sizes = LocalAppFontSizes.current
     TextButton(onClick = onClick) {
-        Text("戻す", color = Color(0xFF1976D2), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text("戻す", color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -5802,6 +6233,7 @@ private fun DeletedEntryRow(
     onDrag: (Float) -> Unit,
     onDragEnd: () -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     val swipeModifier = horizontalLongPressSwipeModifier(
         key = "deleted-${entry.id}",
         onSwipeStart = onDragStart,
@@ -5826,7 +6258,7 @@ private fun DeletedEntryRow(
             Text(
                 text = "戻す",
                 color = Color(0xFF1976D2),
-                fontSize = 16.sp,
+                fontSize = sizes.listAction,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(end = 12.dp)
             )
@@ -5840,7 +6272,7 @@ private fun DeletedEntryRow(
         }
         Text(
             text = entry.name.ifBlank { "辟｡鬘後・繧｢繧､繝・Β" },
-            fontSize = 19.sp,
+            fontSize = sizes.listText,
             color = Color(0xFF666666),
             modifier = Modifier.weight(1f)
         )
@@ -5848,7 +6280,7 @@ private fun DeletedEntryRow(
             Text(
                 text = "消去",
                 color = Color(0xFFD32F2F),
-                fontSize = 16.sp,
+                fontSize = sizes.listAction,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(start = 12.dp)
             )
@@ -6503,6 +6935,7 @@ private fun FavoriteActiveEntryRow(
     onDrag: (Float, Float) -> Unit,
     onDragEnd: () -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     val rowKey = favoriteEntryRowKey(memoId, entry)
     val swipeModifier = swipeToTrashModifier(
         key = rowKey,
@@ -6535,8 +6968,8 @@ private fun FavoriteActiveEntryRow(
         Text(
             text = entry.name,
             color = Color.Black,
-            fontSize = 20.sp,
-            lineHeight = 24.sp,
+            fontSize = sizes.listText,
+            lineHeight = sizes.listLineHeight,
             modifier = Modifier
                 .weight(1f)
                 .padding(vertical = 8.dp)
@@ -6545,13 +6978,13 @@ private fun FavoriteActiveEntryRow(
             Text(
                 text = "→ 🗑",
                 color = Color(0xFFD32F2F),
-                fontSize = 15.sp,
+                fontSize = sizes.listAction,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(horizontal = 8.dp)
             )
         } else {
             TextButton(onClick = onComplete, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                Text("完了", color = Color(0xFF1976D2), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Text("完了", color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -6572,6 +7005,7 @@ private fun FavoriteDoneEntryRow(
     onDrag: (Float, Float) -> Unit,
     onDragEnd: () -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     val rowKey = favoriteEntryRowKey(memoId, entry)
     val swipeModifier = swipeToTrashModifier(
         key = rowKey,
@@ -6609,8 +7043,8 @@ private fun FavoriteDoneEntryRow(
         Text(
             text = entry.name,
             color = Color(0xFF777777),
-            fontSize = 20.sp,
-            lineHeight = 24.sp,
+            fontSize = sizes.listText,
+            lineHeight = sizes.listLineHeight,
             fontWeight = FontWeight.Bold,
             textDecoration = TextDecoration.LineThrough,
             modifier = Modifier
@@ -6621,13 +7055,13 @@ private fun FavoriteDoneEntryRow(
             Text(
                 text = "→ 🗑",
                 color = Color(0xFFD32F2F),
-                fontSize = 15.sp,
+                fontSize = sizes.listAction,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(horizontal = 8.dp)
             )
         } else {
             TextButton(onClick = onRestore, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                Text("戻す", color = Color(0xFF1976D2), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Text("戻す", color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -6640,6 +7074,7 @@ private fun FavoriteDeletedEntryRow(
     onRestore: () -> Unit,
     onErase: () -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -6656,17 +7091,17 @@ private fun FavoriteDeletedEntryRow(
         Text(
             text = entry.name,
             color = Color(0xFF666666),
-            fontSize = 20.sp,
-            lineHeight = 24.sp,
+            fontSize = sizes.listText,
+            lineHeight = sizes.listLineHeight,
             modifier = Modifier
                 .weight(1f)
                 .padding(vertical = 8.dp)
         )
         TextButton(onClick = onRestore, contentPadding = PaddingValues(horizontal = 8.dp)) {
-            Text("戻す", color = Color(0xFF1976D2), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text("戻す", color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
         }
         TextButton(onClick = onErase, contentPadding = PaddingValues(horizontal = 6.dp)) {
-            Text("消去", color = Color(0xFFD32F2F), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text("消去", color = Color(0xFFD32F2F), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
         }
     }
     Divider(color = Color(0xFFE0E0E0))
@@ -6674,6 +7109,7 @@ private fun FavoriteDeletedEntryRow(
 
 @Composable
 private fun FavoriteEmptyEntryRow() {
+    val sizes = LocalAppFontSizes.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -6681,7 +7117,7 @@ private fun FavoriteEmptyEntryRow() {
             .padding(horizontal = 18.dp, vertical = 18.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text("未入力", color = Color(0xFF9E9E9E), fontSize = 18.sp)
+        Text("未入力", color = Color(0xFF9E9E9E), fontSize = sizes.listPlaceholder)
     }
     Divider(color = Color(0xFFE0E0E0))
 }
@@ -6695,11 +7131,14 @@ private fun SettingsScreen(
     onSimpleModeChanged: (Boolean) -> Unit,
     leftHandModeEnabled: Boolean,
     onLeftHandModeChanged: (Boolean) -> Unit,
+    largeFontEnabled: Boolean,
+    onLargeFontChanged: (Boolean) -> Unit,
     microphoneOperationEnabled: Boolean,
     onOpenMicrophoneSettings: () -> Unit,
     onResetOperationHelp: () -> Unit
 ) {
     val listState = rememberLazyListState()
+    val sizes = LocalAppFontSizes.current
     OneHandSettingsFrame(
         oneHandModeEnabled = oneHandModeEnabled,
         listAtTop = !listState.canScrollBackward
@@ -6713,7 +7152,7 @@ private fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 item {
-                    Text("モード", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF444444))
+                    Text("モード", fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = Color(0xFF444444))
                 }
                 item {
                     SettingModeRow(
@@ -6745,6 +7184,12 @@ private fun SettingsScreen(
                         description = "左手で操作しやすいボタン配置に変更します。",
                         checked = leftHandModeEnabled,
                         onCheckedChange = onLeftHandModeChanged
+                    )
+                }
+                item {
+                    SettingFontSizeRow(
+                        largeFontEnabled = largeFontEnabled,
+                        onLargeFontChanged = onLargeFontChanged
                     )
                 }
                 item {
@@ -6810,6 +7255,7 @@ private fun MicrophoneSettingsScreen(
     }
 
     val microphoneControlsEnabled = !settings.disabled
+    val sizes = LocalAppFontSizes.current
     val listState = rememberLazyListState()
     OneHandSettingsFrame(
         oneHandModeEnabled = oneHandModeEnabled,
@@ -6879,14 +7325,14 @@ private fun MicrophoneSettingsScreen(
                     ) {
                         Text(
                             "動作",
-                            fontSize = 15.sp,
+                            fontSize = sizes.settingsValue,
                             fontWeight = FontWeight.Bold,
                             color = if (microphoneControlsEnabled) Color(0xFF666666) else Color(0xFFBBBBBB),
                             modifier = Modifier.weight(0.42f)
                         )
                         Text(
                             "指示語",
-                            fontSize = 15.sp,
+                            fontSize = sizes.settingsValue,
                             fontWeight = FontWeight.Bold,
                             color = if (microphoneControlsEnabled) Color(0xFF666666) else Color(0xFFBBBBBB),
                             modifier = Modifier.weight(0.58f)
@@ -7007,11 +7453,12 @@ private fun MicrophoneStopTimeoutDropdown(
     enabled: Boolean = true,
     onSelected: (Int) -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     var expanded by remember { mutableStateOf(false) }
     val selectedLabel = MicrophoneStopOptions.firstOrNull { it.first == selectedMinutes }?.second
         ?: MicrophoneStopOptions.first().second
     Column {
-        Text("マイク停止までの時間", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+        Text("マイク停止までの時間", fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = Color.Black)
         Spacer(Modifier.height(8.dp))
         Box {
             Card(
@@ -7028,14 +7475,14 @@ private fun MicrophoneStopTimeoutDropdown(
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(selectedLabel, fontSize = 16.sp, modifier = Modifier.weight(1f), color = Color.Black)
+                    Text(selectedLabel, fontSize = sizes.settingsValue, modifier = Modifier.weight(1f), color = Color.Black)
                     Text("▼", fontSize = 14.sp, color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
                 }
             }
             DropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
                 MicrophoneStopOptions.forEach { (minutes, label) ->
                     DropdownMenuItem(
-                        text = { Text(label, fontSize = 16.sp) },
+                        text = { Text(label, fontSize = sizes.settingsValue) },
                         onClick = {
                             expanded = false
                             onSelected(minutes)
@@ -7055,13 +7502,14 @@ private fun MicrophoneCommandEditorRow(
     enabled: Boolean = true,
     onPhraseChanged: (String) -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             action,
-            fontSize = 16.sp,
+            fontSize = sizes.settingsValue,
             fontWeight = FontWeight.Bold,
             color = if (enabled) Color.Black else Color(0xFFAAAAAA),
             modifier = Modifier
@@ -7073,7 +7521,7 @@ private fun MicrophoneCommandEditorRow(
             onValueChange = { if (enabled) onPhraseChanged(it) },
             enabled = enabled,
             singleLine = true,
-            textStyle = TextStyle(fontSize = 16.sp, color = if (enabled) Color.Black else Color(0xFFAAAAAA)),
+            textStyle = TextStyle(fontSize = sizes.settingsValue, color = if (enabled) Color.Black else Color(0xFFAAAAAA)),
             cursorBrush = SolidColor(Color(0xFF1976D2)),
             modifier = Modifier
                 .weight(0.58f)
@@ -7082,7 +7530,7 @@ private fun MicrophoneCommandEditorRow(
             decorationBox = { innerTextField ->
                 Box(contentAlignment = Alignment.CenterStart) {
                     if (phrase.isBlank()) {
-                        Text("指示語を入力", color = Color(0xFFAAAAAA), fontSize = 15.sp)
+                        Text("指示語を入力", color = Color(0xFFAAAAAA), fontSize = sizes.settingsBody)
                     }
                     innerTextField()
                 }
@@ -7098,6 +7546,7 @@ private fun SettingNavigationRow(
     description: String,
     onClick: () -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -7109,9 +7558,9 @@ private fun SettingNavigationRow(
                 .weight(1f)
                 .padding(end = 12.dp)
         ) {
-            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+            Text(title, fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = Color.Black)
             Spacer(Modifier.height(4.dp))
-            Text(description, color = Color(0xFF666666), fontSize = 13.sp, lineHeight = 18.sp)
+            Text(description, color = Color(0xFF666666), fontSize = sizes.settingsBody, lineHeight = sizes.settingsBodyLineHeight)
         }
         Text("›", color = Color(0xFF1976D2), fontSize = 30.sp, fontWeight = FontWeight.Bold)
     }
@@ -7125,6 +7574,7 @@ private fun SettingModeRow(
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -7137,12 +7587,66 @@ private fun SettingModeRow(
                 .weight(1f)
                 .padding(start = 6.dp)
         ) {
-            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+            Text(title, fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = Color.Black)
             Spacer(Modifier.height(4.dp))
-            Text(description, color = Color(0xFF666666), fontSize = 13.sp, lineHeight = 18.sp)
+            Text(description, color = Color(0xFF666666), fontSize = sizes.settingsBody, lineHeight = sizes.settingsBodyLineHeight)
         }
     }
     Divider(color = Color(0xFFE0E0E0))
+}
+
+@Composable
+private fun SettingFontSizeRow(
+    largeFontEnabled: Boolean,
+    onLargeFontChanged: (Boolean) -> Unit
+) {
+    val sizes = LocalAppFontSizes.current
+    Column(Modifier.fillMaxWidth()) {
+        Text("フォント調整", fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = Color.Black)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            SettingFontSizeChoice(
+                label = "中",
+                selected = !largeFontEnabled,
+                onClick = { onLargeFontChanged(false) },
+                modifier = Modifier.weight(1f)
+            )
+            SettingFontSizeChoice(
+                label = "大",
+                selected = largeFontEnabled,
+                onClick = { onLargeFontChanged(true) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+    Divider(color = Color(0xFFE0E0E0), modifier = Modifier.padding(top = 12.dp))
+}
+
+@Composable
+private fun SettingFontSizeChoice(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val sizes = LocalAppFontSizes.current
+    Surface(
+        modifier = modifier
+            .height(48.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) Color(0xFFE3F2FD) else Color.White,
+        border = BorderStroke(1.dp, if (selected) Color(0xFF1976D2) else Color(0xFFD5D5D5))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            RadioButton(selected = selected, onClick = onClick)
+            Text(label, fontSize = sizes.settingsValue, fontWeight = FontWeight.Bold, color = Color.Black)
+        }
+    }
 }
 
 @Composable
@@ -7153,6 +7657,7 @@ private fun SettingToggleRow(
     enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -7164,9 +7669,9 @@ private fun SettingToggleRow(
                 .weight(1f)
                 .padding(end = 12.dp)
         ) {
-            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = if (enabled) Color.Black else Color(0xFFAAAAAA))
+            Text(title, fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = if (enabled) Color.Black else Color(0xFFAAAAAA))
             Spacer(Modifier.height(4.dp))
-            Text(description, color = if (enabled) Color(0xFF666666) else Color(0xFFBBBBBB), fontSize = 13.sp, lineHeight = 18.sp)
+            Text(description, color = if (enabled) Color(0xFF666666) else Color(0xFFBBBBBB), fontSize = sizes.settingsBody, lineHeight = sizes.settingsBodyLineHeight)
         }
         Checkbox(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
     }
@@ -7180,6 +7685,7 @@ private fun SettingActionRow(
     buttonText: String,
     onClick: () -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
@@ -7189,9 +7695,9 @@ private fun SettingActionRow(
                 .weight(1f)
                 .padding(end = 12.dp)
         ) {
-            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+            Text(title, fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = Color.Black)
             Spacer(Modifier.height(4.dp))
-            Text(description, color = Color(0xFF666666), fontSize = 13.sp, lineHeight = 18.sp)
+            Text(description, color = Color(0xFF666666), fontSize = sizes.settingsBody, lineHeight = sizes.settingsBodyLineHeight)
         }
         Button(
             onClick = onClick,
@@ -7199,7 +7705,7 @@ private fun SettingActionRow(
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
         ) {
-            Text(buttonText, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text(buttonText, color = Color.White, fontSize = sizes.settingsBody, fontWeight = FontWeight.Bold)
         }
     }
     Divider(color = Color(0xFFE0E0E0))
@@ -7207,9 +7713,10 @@ private fun SettingActionRow(
 
 @Composable
 private fun SettingRow(label: String, value: String) {
+    val sizes = LocalAppFontSizes.current
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-        Text(value, color = Color(0xFF666666), fontSize = 16.sp)
+        Text(label, fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        Text(value, color = Color(0xFF666666), fontSize = sizes.settingsValue)
     }
     Divider(color = Color(0xFFE0E0E0))
 }
@@ -7355,7 +7862,7 @@ private fun MemoMoveEditScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         EditMemoPane(
-                            label = "現在のカード",
+                            label = "現在の\nカード",
                             labelColor = Color(0xFF43A047),
                             headerColor = Color(0xFFE8F5E9),
                             side = EditPaneSide.Left,
@@ -7388,7 +7895,7 @@ private fun MemoMoveEditScreen(
                         )
                         Spacer(Modifier.width(12.dp))
                         EditMemoPane(
-                            label = "移動後のカード",
+                            label = "移動後の\nカード",
                             labelColor = Color(0xFF7E57C2),
                             headerColor = Color(0xFFF1E3FF),
                             side = EditPaneSide.Right,
@@ -7456,6 +7963,7 @@ private fun MemoMoveEditScreen(
 
 @Composable
 private fun EditInstructionPanel(onDismiss: () -> Unit) {
+    val sizes = LocalAppFontSizes.current
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -7474,14 +7982,14 @@ private fun EditInstructionPanel(onDismiss: () -> Unit) {
                 Text(
                     "アイテムを移動できます。",
                     color = Color(0xFF3E2D22),
-                    fontSize = 16.sp,
+                    fontSize = sizes.editHelpTitle,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     "カードのタイトルをタップすると、カードを切り替えることができます。",
                     color = Color(0xFF5D4037),
-                    fontSize = 12.sp,
-                    lineHeight = 15.sp
+                    fontSize = sizes.editHelpBody,
+                    lineHeight = sizes.editHelpLineHeight
                 )
             }
             TextButton(
@@ -7516,6 +8024,7 @@ private fun EditMemoPane(
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
+    val sizes = LocalAppFontSizes.current
     val listState = rememberLazyListState()
     val listAtTop = !listState.canScrollBackward
 
@@ -7531,12 +8040,14 @@ private fun EditMemoPane(
         ) {
             Text(
                 label,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp),
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
                 color = Color.White,
-                fontSize = 12.sp,
+                fontSize = 18.sp,
+                lineHeight = 20.sp,
                 fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
             )
         }
         Card(
@@ -7634,6 +8145,7 @@ private fun EditMemoHeader(
             )
             Box(
                 modifier = Modifier
+                    .align(Alignment.TopEnd)
                     .padding(5.dp)
                     .size(42.dp)
                     .background(Color.White.copy(alpha = 0.86f), CircleShape),
@@ -7690,6 +8202,7 @@ private fun EditMoveEntryRow(
     onDragEnd: () -> Unit,
     onDragCancel: () -> Unit
 ) {
+    val sizes = LocalAppFontSizes.current
     var rowBounds by remember { mutableStateOf<Rect?>(null) }
     val moveSparkleAlpha = rememberSparkleAlpha(recentlyMoved)
     Row(
@@ -7725,8 +8238,8 @@ private fun EditMoveEntryRow(
         Text(
             text = entry.name,
             color = if (entry.checked) Color(0xFF777777) else Color.Black,
-            fontSize = 15.sp,
-            lineHeight = 18.sp,
+            fontSize = sizes.editEntry,
+            lineHeight = sizes.editEntryLineHeight,
             textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
@@ -7742,6 +8255,7 @@ private fun EditFloatingEntryRow(
     entry: ShoppingEntry,
     modifier: Modifier = Modifier
 ) {
+    val sizes = LocalAppFontSizes.current
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(9.dp),
@@ -7759,7 +8273,8 @@ private fun EditFloatingEntryRow(
                 entry.name,
                 color = if (entry.checked) Color(0xFF777777) else Color.Black,
                 textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None,
-                fontSize = 16.sp,
+                fontSize = sizes.editEntry,
+                lineHeight = sizes.editEntryLineHeight,
                 fontWeight = FontWeight.Bold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -8724,13 +9239,12 @@ private fun CompactHeader(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .statusBarsPadding()
             .background(Color.White)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp)
+                .height(HomeTitleHeaderHeight)
                 .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -8812,13 +9326,12 @@ private fun RowScope.BottomIcon(
     selected: Boolean,
     onClick: () -> Unit
 ) {
-    val selectedText = Color(0xFF0D47A1)
     val normalText = Color(0xFF444444)
     Column(
         modifier = Modifier
             .weight(1f)
             .fillMaxHeight()
-            .padding(horizontal = 3.dp, vertical = 4.dp)
+            .padding(horizontal = 2.dp, vertical = 2.dp)
             .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -8827,19 +9340,22 @@ private fun RowScope.BottomIcon(
             painter = painterResource(if (selected) selectedDrawableId else drawableId),
             contentDescription = label,
             modifier = Modifier
-                .size(if (selected) 58.dp else 44.dp)
+                .size(if (selected) 58.dp else 30.dp)
                 .graphicsLayer { alpha = if (selected) 1f else 0.72f },
             contentScale = ContentScale.Fit
         )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            text = label,
-            fontSize = 11.sp,
-            lineHeight = 12.sp,
-            fontWeight = FontWeight.Bold,
-            color = if (selected) selectedText else normalText,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        if (!selected) {
+            Spacer(Modifier.height(1.dp))
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                lineHeight = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = normalText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
