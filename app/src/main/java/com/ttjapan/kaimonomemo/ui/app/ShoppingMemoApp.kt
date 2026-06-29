@@ -310,6 +310,7 @@ private const val OneHandScrollSpeedMultiplier = 1.5f
 private const val TemporaryMemoId = "temporary-shopping-memo"
 private const val TemporaryMemoTitle = "テンポラリ"
 private const val SimpleTemporaryMemoTitle = "お買い物リスト"
+private const val HomeOperationScale = 0.88f
 private val TrashTabSelectedColor = Color(0xFFE91E63)
 private val HomeTitleHeaderHeight = 52.dp
 private val HomeProgressBarHeight = 44.dp
@@ -1552,6 +1553,7 @@ private fun AdvancedHomeScreen(
         if (microphoneEnabled && draggingId == null) {
             MicFab(
                 controller = homeSpeechController,
+                sizeScale = HomeOperationScale,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 12.dp)
@@ -1579,6 +1581,7 @@ private fun AdvancedHomeScreen(
         if (draggedMemo != null && draggedBounds != null) {
             MemoCard(
                 memo = draggedMemo,
+                sizeScale = HomeOperationScale,
                 modifier = Modifier
                     .graphicsLayer {
                         translationX = draggedBounds.left - (homeBounds?.left ?: 0f) + dragOffset.x
@@ -2009,12 +2012,12 @@ private fun HomeMemoCarouselPage(
                 )
             }
     ) {
-        val cardWidth = (maxWidth * 0.47f).coerceIn(112.dp, 172.dp)
-        val cardHeight = (cardWidth * 1.18f).coerceIn(150.dp, 230.dp)
+        val cardWidth = ((maxWidth * 0.47f).coerceIn(112.dp, 172.dp)) * HomeOperationScale
+        val cardHeight = (cardWidth * 1.18f).coerceIn(150.dp * HomeOperationScale, 230.dp * HomeOperationScale)
         val orbitCenterX = maxWidth * 0.94f
         val orbitCenterY = maxHeight * 0.92f
-        val radiusX = maxWidth * 0.68f
-        val radiusY = maxHeight * 0.42f
+        val radiusX = maxWidth * 0.68f * HomeOperationScale
+        val radiusY = maxHeight * 0.42f * HomeOperationScale
         val frontAngle = -2.25f
         data class CarouselPlacement(
             val x: Dp,
@@ -2068,7 +2071,7 @@ private fun HomeMemoCarouselPage(
                     .align(Alignment.Center)
                     .width(cardWidth),
             ) {
-                AddMemoCard(compact = true, onClick = onAddMemo)
+                AddMemoCard(compact = true, contentScale = HomeOperationScale, onClick = onAddMemo)
             }
         } else {
             memos.forEachIndexed { index, memo ->
@@ -2170,6 +2173,7 @@ private fun HomeMemoCarouselPage(
                         MemoCard(
                             memo = memo,
                             sparkling = sparklingMemoIds.contains(memo.id),
+                            sizeScale = HomeOperationScale,
                             modifier = Modifier
                                 .width(cardWidth)
                                 ,
@@ -2201,7 +2205,7 @@ private fun HomeMemoCarouselPage(
         }
 
         if (showCardDropTargets && count > 0) {
-            val dropTargetHeight = ((maxWidth - 20.dp) / 2f).coerceAtLeast(120.dp)
+            val dropTargetHeight = (((maxWidth - 20.dp) / 2f).coerceAtLeast(120.dp)) * HomeOperationScale
             HomeCarouselDropTargets(
                 imageTargetActive = imageTargetActive,
                 trashTargetActive = trashTargetActive,
@@ -2217,8 +2221,8 @@ private fun HomeMemoCarouselPage(
         }
 
         if (count > 0) {
-            val controlWidth = (maxWidth * 0.34f).coerceIn(104.dp, 150.dp)
-            val memoButtonSize = (controlWidth * 0.68f).coerceIn(68.dp, 92.dp)
+            val controlWidth = ((maxWidth * 0.34f).coerceIn(104.dp, 150.dp)) * HomeOperationScale
+            val memoButtonSize = (controlWidth * 0.68f).coerceIn(68.dp * HomeOperationScale, 92.dp * HomeOperationScale)
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -2230,9 +2234,10 @@ private fun HomeMemoCarouselPage(
             ) {
                 HomeTrashDisplayButton(
                     onClick = onShowTrash,
-                    modifier = Modifier.size(86.dp)
+                    sizeScale = HomeOperationScale,
+                    modifier = Modifier.size(86.dp * HomeOperationScale)
                 )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(10.dp * HomeOperationScale))
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2240,6 +2245,7 @@ private fun HomeMemoCarouselPage(
                 ) {
                     HomeMemoButton(
                         onClick = onOpenTemporaryMemo,
+                        sizeScale = HomeOperationScale,
                         modifier = Modifier
                             .size(memoButtonSize)
                             .align(Alignment.TopStart)
@@ -2252,6 +2258,7 @@ private fun HomeMemoCarouselPage(
                     AddMemoCard(
                         compact = true,
                         onClick = onAddMemo,
+                        contentScale = HomeOperationScale,
                         modifier = Modifier
                             .matchParentSize()
                             .align(Alignment.BottomEnd)
@@ -3337,6 +3344,7 @@ private fun MemoCard(
     memo: ShoppingMemo,
     modifier: Modifier = Modifier,
     sparkling: Boolean = false,
+    sizeScale: Float = 1f,
     onClick: () -> Unit,
     onToggleFavorite: () -> Unit
 ) {
@@ -3347,10 +3355,10 @@ private fun MemoCard(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 150.dp)
+            .heightIn(min = 150.dp * sizeScale)
             .clickable(onClick = onClick)
             .sparkleOverlay(sparkleAlpha),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(12.dp * sizeScale),
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
         border = BorderStroke(1.dp, Color(0xFFC8C8C8)),
         colors = CardDefaults.cardColors(containerColor = Color.White)
@@ -3359,43 +3367,43 @@ private fun MemoCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(86.dp)
+                    .height(86.dp * sizeScale)
                     .background(Color(0xFFE8F5E9)),
                 contentAlignment = Alignment.Center
             ) {
-                Text("🛒", fontSize = 48.sp)
+                Text("🛒", fontSize = (48f * sizeScale).sp)
                 ShoppingPatternImage(pattern = memo.imagePattern, modifier = Modifier.fillMaxSize())
                 IconButton(
                     onClick = onToggleFavorite,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(3.dp)
-                        .size(34.dp)
+                        .padding(3.dp * sizeScale)
+                        .size(34.dp * sizeScale)
                         .background(Color.White.copy(alpha = 0.9f), CircleShape)
                 ) {
                     Text(
                         text = if (memo.favorite) "★" else "☆",
                         color = if (memo.favorite) Color(0xFFFFA000) else Color(0xFF555555),
-                        fontSize = 22.sp
+                        fontSize = (22f * sizeScale).sp
                     )
                 }
             }
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .padding(horizontal = 8.dp * sizeScale, vertical = 6.dp * sizeScale)
             ) {
                 Text(
                     "$doneCount/$totalCount 件 完了",
                     color = Color(0xFF2E7D32),
-                    fontSize = 16.sp,
-                    lineHeight = 18.sp
+                    fontSize = (16f * sizeScale).sp,
+                    lineHeight = (18f * sizeScale).sp
                 )
                 Text(
                     text = memo.title.ifBlank { "タイトル入力" },
                     color = Color(0xFF212121),
-                    fontSize = 22.sp,
-                    lineHeight = 24.sp,
+                    fontSize = (22f * sizeScale).sp,
+                    lineHeight = (24f * sizeScale).sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -3409,6 +3417,7 @@ private fun MemoCard(
 private fun AddMemoCard(
     compact: Boolean,
     onClick: () -> Unit,
+    contentScale: Float = 1f,
     modifier: Modifier = Modifier
 ) {
     val cardModifier = if (compact) {
@@ -3427,7 +3436,7 @@ private fun AddMemoCard(
         colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("+", color = Color(0xFF1976D2), fontSize = if (compact) 64.sp else 96.sp)
+            Text("+", color = Color(0xFF1976D2), fontSize = ((if (compact) 64f else 96f) * contentScale).sp)
         }
     }
 }
@@ -3435,11 +3444,12 @@ private fun AddMemoCard(
 @Composable
 private fun HomeMemoButton(
     onClick: () -> Unit,
+    sizeScale: Float = 1f,
     modifier: Modifier = Modifier
 ) {
     Card(
         modifier = modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(10.dp * sizeScale),
         elevation = CardDefaults.cardElevation(defaultElevation = 5.dp),
         border = BorderStroke(1.dp, Color(0xFFF9A825)),
         colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEE88))
@@ -3449,15 +3459,15 @@ private fun HomeMemoButton(
                 text = "\u30E1\u30E2",
                 modifier = Modifier.align(Alignment.Center),
                 color = Color(0xFF3A3124),
-                fontSize = 24.sp,
-                lineHeight = 26.sp,
+                fontSize = (24f * sizeScale).sp,
+                lineHeight = (26f * sizeScale).sp,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center
             )
             Canvas(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .size(22.dp)
+                    .size(22.dp * sizeScale)
             ) {
                 val foldPath = Path().apply {
                     moveTo(size.width, 0f)
@@ -3482,11 +3492,12 @@ private fun HomeMemoButton(
 @Composable
 private fun HomeTrashDisplayButton(
     onClick: () -> Unit,
+    sizeScale: Float = 1f,
     modifier: Modifier = Modifier
 ) {
     Card(
         modifier = modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(12.dp * sizeScale),
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
         border = BorderStroke(1.dp, Color(0xFF90CAF9)),
         colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F2FD))
@@ -3495,8 +3506,8 @@ private fun HomeTrashDisplayButton(
             Text(
                 text = "\u30B4\u30DF\u7BB1\n\u8868\u793A",
                 color = Color(0xFF1976D2),
-                fontSize = 19.sp,
-                lineHeight = 23.sp,
+                fontSize = (19f * sizeScale).sp,
+                lineHeight = (23f * sizeScale).sp,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center
             )
@@ -6342,6 +6353,7 @@ private fun DeletedItemsPageLegacy(
 private fun MicFab(
     controller: ContinuousSpeechController,
     modifier: Modifier,
+    sizeScale: Float = 1f,
     onClick: () -> Unit
 ) {
     val hasPartial = controller.partialText.isNotBlank()
@@ -6372,12 +6384,12 @@ private fun MicFab(
         FloatingActionButton(
             onClick = onClick,
             containerColor = if (controller.isRunning) Color(0xFFE11D48) else Color(0xFF1E88E5),
-            modifier = Modifier.size(86.dp)
+            modifier = Modifier.size(86.dp * sizeScale)
         ) {
             if (controller.isRunning && !isHearingSpeech) {
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(34.dp * sizeScale)
                         .graphicsLayer {
                             scaleX = stopScale
                             scaleY = stopScale
@@ -6391,7 +6403,7 @@ private fun MicFab(
                     ),
                     contentDescription = null,
                     tint = Color.White,
-                    modifier = Modifier.size(if (isHearingSpeech) 46.dp else 50.dp)
+                    modifier = Modifier.size((if (isHearingSpeech) 46.dp else 50.dp) * sizeScale)
                 )
             }
         }
