@@ -99,6 +99,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -469,6 +470,29 @@ private fun ensureDisplayBlankEntry(memo: ShoppingMemo): ShoppingEntry? {
     return null
 }
 
+private fun visibleEntryGroup(memo: ShoppingMemo, checked: Boolean): List<ShoppingEntry> {
+    return memo.entries.filter { it.name.isNotBlank() && it.checked == checked }
+}
+
+private fun moveEntryWithinVisibleGroup(memo: ShoppingMemo, entry: ShoppingEntry, direction: Int): Boolean {
+    if (entry.name.isBlank()) return false
+    val active = visibleEntryGroup(memo, checked = false).toMutableList()
+    val done = visibleEntryGroup(memo, checked = true).toMutableList()
+    val targetGroup = if (entry.checked) done else active
+    val from = targetGroup.indexOfFirst { it.id == entry.id }
+    if (from < 0) return false
+    val to = (from + direction).coerceIn(0, targetGroup.lastIndex)
+    if (from == to) return false
+    val moving = targetGroup.removeAt(from)
+    targetGroup.add(to, moving)
+
+    memo.entries.clear()
+    memo.entries.addAll(active)
+    memo.entries.addAll(done)
+    ensureDisplayBlankEntry(memo)
+    return true
+}
+
 private fun requestBlankEntry(memo: ShoppingMemo): ShoppingEntry {
     val active = memo.entries.filter { it.name.isNotBlank() && !it.checked }
     val done = memo.entries.filter { it.name.isNotBlank() && it.checked }
@@ -821,7 +845,7 @@ fun ShoppingMemoApp() {
                     onBack = { currentScreen = Screen.Settings }
                 )
                 Screen.Favorites -> FavoritesScreen(
-                    memos = activeMemos.filter { it.favorite },
+                    memos = listOf(temporaryMemo) + activeMemos.filter { it.favorite },
                     oneHandModeEnabled = oneHandModeEnabled,
                     onChanged = ::persist
                 )
@@ -3447,8 +3471,19 @@ private fun HomeMemoButton(
     sizeScale: Float = 1f,
     modifier: Modifier = Modifier
 ) {
+    MemoNoteIcon(
+        sizeScale = sizeScale,
+        modifier = modifier.clickable(onClick = onClick)
+    )
+}
+
+@Composable
+private fun MemoNoteIcon(
+    sizeScale: Float = 1f,
+    modifier: Modifier = Modifier
+) {
     Card(
-        modifier = modifier.clickable(onClick = onClick),
+        modifier = modifier,
         shape = RoundedCornerShape(10.dp * sizeScale),
         elevation = CardDefaults.cardElevation(defaultElevation = 5.dp),
         border = BorderStroke(1.dp, Color(0xFFF9A825)),
@@ -5184,22 +5219,7 @@ private fun ActiveItemsPage(
     }
 
     fun moveEntry(entry: ShoppingEntry, direction: Int): Boolean {
-        if (entry.name.isBlank()) return false
-        val active = memo.entries.filter { it.name.isNotBlank() && !it.checked }.toMutableList()
-        val done = memo.entries.filter { it.checked && it.name.isNotBlank() }.toMutableList()
-        val targetGroup = if (entry.checked) done else active
-        val from = targetGroup.indexOf(entry)
-        if (from < 0) return false
-        val to = (from + direction).coerceIn(0, targetGroup.lastIndex)
-        if (from == to) return false
-        targetGroup.removeAt(from)
-        targetGroup.add(to, entry)
-        val blank = memo.entries.firstOrNull { it.name.isBlank() }
-        memo.entries.clear()
-        memo.entries.addAll(active)
-        if (blank != null) memo.entries.add(blank)
-        memo.entries.addAll(done)
-        ensureDisplayBlankEntry(memo)
+        if (!moveEntryWithinVisibleGroup(memo, entry, direction)) return false
         onChanged()
         return true
     }
@@ -6417,15 +6437,18 @@ private fun FavoritesScreen(
 ) {
     var selectedTab by remember { mutableStateOf(0) }
     var listAtTop by remember { mutableStateOf(true) }
+    var itemDragActive by remember { mutableStateOf(false) }
     val density = LocalDensity.current
     val swipeThresholdPx = with(density) { 72.dp.toPx() }
     OneHandSettingsFrame(
         oneHandModeEnabled = oneHandModeEnabled,
-        listAtTop = listAtTop
+        listAtTop = listAtTop,
+        gestureBlocked = itemDragActive
     ) { frameModifier ->
         Column(
             frameModifier
-                .pointerInput(selectedTab, swipeThresholdPx) {
+                .pointerInput(selectedTab, swipeThresholdPx, itemDragActive) {
+                    if (itemDragActive) return@pointerInput
                     var dragX = 0f
                     var changed = false
                     detectHorizontalDragGestures(
@@ -6463,6 +6486,7 @@ private fun FavoritesScreen(
                 when (selectedTab) {
                     0 -> FavoriteItemsOverview(
                         memos = memos,
+                        onItemDragActiveChange = { itemDragActive = it },
                         onListAtTopChanged = { listAtTop = it },
                         onChanged = onChanged
                     )
@@ -6528,6 +6552,7 @@ private fun FavoriteScreenTabs(
 @Composable
 private fun FavoriteItemsOverview(
     memos: List<ShoppingMemo>,
+    onItemDragActiveChange: (Boolean) -> Unit,
     onListAtTopChanged: (Boolean) -> Unit,
     onChanged: () -> Unit
 ) {
@@ -6536,23 +6561,206 @@ private fun FavoriteItemsOverview(
     val listState = rememberLazyListState()
     val rowBounds = remember { mutableStateMapOf<String, Rect>() }
     val deleteSwipeThresholdPx = with(density) { 104.dp.toPx() }
+    val dragEdgePaddingPx = with(density) { 8.dp.toPx() }
+    val fallbackRowHeightPx = with(density) { 56.dp.toPx() }
+    val bottomPaddingPx = with(density) { DetailListExtraBottom.roundToPx() }
     var draggingMemoId by remember { mutableStateOf<String?>(null) }
     var draggingEntryId by remember { mutableStateOf<String?>(null) }
     var draggingChecked by remember { mutableStateOf(false) }
     var dragOffsetX by remember { mutableStateOf(0f) }
     var dragOffsetY by remember { mutableStateOf(0f) }
+    var dragDirectionY by remember { mutableStateOf(0) }
+    var autoReorderDirection by remember { mutableStateOf(0) }
+    var topClampGapY by remember { mutableStateOf(0f) }
+    var bottomClampGapY by remember { mutableStateOf(0f) }
     val listAtTop = !listState.canScrollBackward
 
     LaunchedEffect(listAtTop) {
         onListAtTopChanged(listAtTop)
     }
 
-    fun keepDraggedCenterAfterLayout(key: String, visualCenterY: Float) {
+    DisposableEffect(Unit) {
+        onDispose { onItemDragActiveChange(false) }
+    }
+
+    fun favoriteRowHeightPx(memo: ShoppingMemo, entry: ShoppingEntry): Float {
+        return listState.layoutInfo.visibleItemsInfo
+            .firstOrNull { it.key == favoriteEntryRowKey(memo.id, entry) }
+            ?.size
+            ?.toFloat()
+            ?: fallbackRowHeightPx
+    }
+
+    fun canDragWithinCurrentFavoriteGroup(memo: ShoppingMemo, entry: ShoppingEntry, direction: Int): Boolean {
+        val group = favoriteVisibleGroup(memo, entry.checked)
+        val index = group.indexOfFirst { it.id == entry.id }
+        return index >= 0 && group.getOrNull(index + direction) != null
+    }
+
+    fun favoriteSectionItemCount(memo: ShoppingMemo): Int {
+        val active = favoriteVisibleGroup(memo, checked = false)
+        val done = favoriteVisibleGroup(memo, checked = true)
+        val bodyCount = if (active.isEmpty() && done.isEmpty()) {
+            1
+        } else {
+            active.size + if (done.isNotEmpty()) 1 + done.size else 0
+        }
+        return 1 + bodyCount + 1
+    }
+
+    fun favoriteListIndexForEntry(memo: ShoppingMemo, entry: ShoppingEntry): Int {
+        var index = 0
+        memos.forEach { currentMemo ->
+            val active = favoriteVisibleGroup(currentMemo, checked = false)
+            val done = favoriteVisibleGroup(currentMemo, checked = true)
+            if (currentMemo.id == memo.id) {
+                return if (entry.checked) {
+                    val doneIndex = done.indexOfFirst { it.id == entry.id }
+                    if (doneIndex < 0) -1 else index + 1 + active.size + 1 + doneIndex
+                } else {
+                    val activeIndex = active.indexOfFirst { it.id == entry.id }
+                    if (activeIndex < 0) -1 else index + 1 + activeIndex
+                }
+            }
+            index += favoriteSectionItemCount(currentMemo)
+        }
+        return -1
+    }
+
+    fun keepFavoriteDraggedEntryVisible(memo: ShoppingMemo, entry: ShoppingEntry, accumulateBottomGap: Boolean = true) {
+        val itemInfo = listState.layoutInfo.visibleItemsInfo
+            .firstOrNull { it.key == favoriteEntryRowKey(memo.id, entry) }
+            ?: return
+        val viewportStart = listState.layoutInfo.viewportStartOffset
+        val autoScrollStart = viewportStart + bottomPaddingPx
+        val autoScrollEnd = listState.layoutInfo.viewportEndOffset - bottomPaddingPx
+        val dragDisplayStart = viewportStart + dragEdgePaddingPx
+        val dragDisplayEnd = listState.layoutInfo.viewportEndOffset - dragEdgePaddingPx
+        var visualTop = itemInfo.offset + dragOffsetY
+        var visualBottom = visualTop + itemInfo.size
+        val edgeBand = itemInfo.size * 0.35f
+        val detectedAutoDirection = when {
+            canDragWithinCurrentFavoriteGroup(memo, entry, 1) && visualBottom >= autoScrollEnd - edgeBand -> 1
+            canDragWithinCurrentFavoriteGroup(memo, entry, -1) && visualTop <= autoScrollStart + edgeBand -> -1
+            else -> 0
+        }
+        autoReorderDirection = when {
+            dragDirectionY > 0 && detectedAutoDirection < 0 -> 0
+            dragDirectionY < 0 && detectedAutoDirection > 0 -> 0
+            else -> detectedAutoDirection
+        }
+        val lowerLimitOverflow = visualBottom - dragDisplayEnd
+        if (lowerLimitOverflow > 0f && (bottomClampGapY > 0f || dragDirectionY >= 0)) {
+            dragOffsetY -= lowerLimitOverflow
+            topClampGapY = 0f
+            if (accumulateBottomGap && dragDirectionY >= 0) {
+                bottomClampGapY += lowerLimitOverflow
+            }
+            visualTop -= lowerLimitOverflow
+            visualBottom -= lowerLimitOverflow
+        }
+        val upperLimitOverflow = viewportStart - visualTop
+        val upperDisplayOverflow = dragDisplayStart - visualTop
+        if (upperDisplayOverflow > 0f && (topClampGapY > 0f || dragDirectionY <= 0)) {
+            dragOffsetY += upperDisplayOverflow
+            bottomClampGapY = 0f
+            if (accumulateBottomGap && dragDirectionY <= 0) {
+                topClampGapY += upperDisplayOverflow
+            }
+            visualTop += upperDisplayOverflow
+            visualBottom += upperDisplayOverflow
+        } else if (upperLimitOverflow > 0f && dragDirectionY <= 0) {
+            dragOffsetY += upperLimitOverflow
+            bottomClampGapY = 0f
+            topClampGapY = 0f
+            visualTop += upperLimitOverflow
+            visualBottom += upperLimitOverflow
+        }
+        val overflowBottom = visualBottom - dragDisplayEnd
+        val overflowTop = viewportStart - visualTop
+        val scrollAmount = when {
+            canDragWithinCurrentFavoriteGroup(memo, entry, 1) &&
+                overflowBottom > 0f &&
+                (bottomClampGapY > 0f || dragDirectionY >= 0) -> overflowBottom.coerceAtMost(itemInfo.size / 2f)
+            canDragWithinCurrentFavoriteGroup(memo, entry, -1) &&
+                overflowTop > 0f &&
+                (topClampGapY > 0f || dragDirectionY <= 0) -> -overflowTop.coerceAtMost(itemInfo.size / 2f)
+            else -> 0f
+        }
+        if (scrollAmount != 0f) {
+            dragOffsetY += scrollAmount
+            scope.launch { listState.scrollBy(scrollAmount) }
+        }
+    }
+
+    fun keepFavoriteDraggedEntryVisibleAfterLayout(
+        memo: ShoppingMemo,
+        entry: ShoppingEntry,
+        accumulateBottomGap: Boolean = true
+    ) {
         scope.launch {
             withFrameNanos { }
-            if (draggingEntryId != null) {
-                val nextBounds = rowBounds[key] ?: return@launch
-                dragOffsetY = visualCenterY - nextBounds.center.y
+            if (draggingMemoId == memo.id && draggingEntryId == entry.id) {
+                keepFavoriteDraggedEntryVisible(memo, entry, accumulateBottomGap)
+            }
+        }
+    }
+
+    fun favoriteDraggedVisualTop(memo: ShoppingMemo, entry: ShoppingEntry): Float? {
+        val itemInfo = listState.layoutInfo.visibleItemsInfo
+            .firstOrNull { it.key == favoriteEntryRowKey(memo.id, entry) }
+            ?: return null
+        return itemInfo.offset + dragOffsetY
+    }
+
+    fun keepFavoriteDraggedEntryAtVisualTopAfterLayout(
+        memo: ShoppingMemo,
+        entry: ShoppingEntry,
+        visualTop: Float,
+        firstVisibleIndex: Int? = null,
+        firstVisibleScrollOffset: Int = 0
+    ) {
+        scope.launch {
+            withFrameNanos { }
+            if (draggingMemoId != memo.id || draggingEntryId != entry.id) return@launch
+            if (firstVisibleIndex != null) {
+                listState.scrollToItem(firstVisibleIndex, firstVisibleScrollOffset)
+                withFrameNanos { }
+                if (draggingMemoId != memo.id || draggingEntryId != entry.id) return@launch
+            }
+            val itemInfo = listState.layoutInfo.visibleItemsInfo
+                .firstOrNull { it.key == favoriteEntryRowKey(memo.id, entry) }
+                ?: return@launch
+            dragOffsetY = visualTop - itemInfo.offset
+            keepFavoriteDraggedEntryVisible(memo, entry)
+        }
+    }
+
+    fun isFavoriteDraggedNearTopEdge(memo: ShoppingMemo, entry: ShoppingEntry): Boolean {
+        val itemInfo = listState.layoutInfo.visibleItemsInfo
+            .firstOrNull { it.key == favoriteEntryRowKey(memo.id, entry) }
+            ?: return false
+        val viewportStart = listState.layoutInfo.viewportStartOffset
+        val autoScrollStart = viewportStart + bottomPaddingPx
+        val visualTop = itemInfo.offset + dragOffsetY
+        return visualTop <= autoScrollStart + itemInfo.size * 0.35f
+    }
+
+    fun pinFavoriteDraggedEntryToTopAfterLayout(memo: ShoppingMemo, entry: ShoppingEntry) {
+        scope.launch {
+            withFrameNanos { }
+            if (draggingMemoId != memo.id || draggingEntryId != entry.id) return@launch
+            val targetIndex = favoriteListIndexForEntry(memo, entry)
+            if (targetIndex < 0) return@launch
+            dragOffsetY = 0f
+            bottomClampGapY = 0f
+            topClampGapY = 0f
+            listState.scrollToItem(targetIndex)
+            withFrameNanos { }
+            if (draggingMemoId == memo.id && draggingEntryId == entry.id) {
+                val group = favoriteVisibleGroup(memo, entry.checked)
+                val groupIndex = group.indexOfFirst { it.id == entry.id }
+                autoReorderDirection = if (dragDirectionY < 0 && groupIndex > 0) -1 else 0
             }
         }
     }
@@ -6564,17 +6772,49 @@ private fun FavoriteItemsOverview(
         draggingChecked = entry.checked
         dragOffsetX = 0f
         dragOffsetY = 0f
+        dragDirectionY = 0
+        autoReorderDirection = 0
+        topClampGapY = 0f
+        bottomClampGapY = 0f
+        onItemDragActiveChange(true)
     }
 
     fun drag(memo: ShoppingMemo, entry: ShoppingEntry, deltaX: Float, deltaY: Float) {
         if (draggingMemoId != memo.id || draggingEntryId != entry.id || draggingChecked != entry.checked) return
-        val rowKey = favoriteEntryRowKey(memo.id, entry)
-        val currentBounds = rowBounds[rowKey] ?: return
+        val firstVisibleIndexAtDragStart = listState.firstVisibleItemIndex
+        val firstVisibleOffsetAtDragStart = listState.firstVisibleItemScrollOffset
+        if (deltaY > 0f) {
+            dragDirectionY = 1
+        } else if (deltaY < 0f) {
+            dragDirectionY = -1
+        }
         dragOffsetX = (dragOffsetX + deltaX).coerceIn(0f, deleteSwipeThresholdPx * 1.4f)
-        dragOffsetY += deltaY
+        val effectiveDeltaY = if (bottomClampGapY > 0f) {
+            if (deltaY >= 0f) {
+                bottomClampGapY += deltaY
+                0f
+            } else {
+                val releasedGap = minOf(bottomClampGapY, -deltaY)
+                bottomClampGapY -= releasedGap
+                deltaY + releasedGap
+            }
+        } else if (topClampGapY > 0f) {
+            if (deltaY <= 0f) {
+                topClampGapY += -deltaY
+                0f
+            } else {
+                val releasedGap = minOf(topClampGapY, deltaY)
+                topClampGapY -= releasedGap
+                deltaY - releasedGap
+            }
+        } else {
+            deltaY
+        }
+        dragOffsetY += effectiveDeltaY
 
-        val visualCenterY = currentBounds.center.y + dragOffsetY
-        var moved = false
+        val targetVisualTop = favoriteDraggedVisualTop(memo, entry)
+        var movedDuringDrag = false
+        var restoreFirstVisibleAfterMove = false
         while (true) {
             val group = favoriteVisibleGroup(memo, entry.checked)
             val currentIndex = group.indexOfFirst { it.id == entry.id }
@@ -6582,26 +6822,61 @@ private fun FavoriteItemsOverview(
             when {
                 dragOffsetY > 0f -> {
                     val next = group.getOrNull(currentIndex + 1) ?: break
-                    val nextHeight = rowBounds[favoriteEntryRowKey(memo.id, next)]?.height ?: currentBounds.height
+                    val nextHeight = favoriteRowHeightPx(memo, next)
                     if (dragOffsetY <= nextHeight / 2f) break
+                    val entryListIndexBeforeMove = favoriteListIndexForEntry(memo, entry)
                     if (!moveFavoriteEntry(memo, entry, 1)) break
+                    movedDuringDrag = true
+                    if (entryListIndexBeforeMove == firstVisibleIndexAtDragStart) {
+                        restoreFirstVisibleAfterMove = true
+                    }
                     dragOffsetY -= nextHeight
-                    moved = true
+                    val newListIndex = favoriteListIndexForEntry(memo, entry)
+                    if (newListIndex >= 0 && newListIndex <= listState.firstVisibleItemIndex) {
+                        scope.launch { listState.scrollToItem(newListIndex) }
+                    }
                 }
                 dragOffsetY < 0f -> {
                     val previous = group.getOrNull(currentIndex - 1) ?: break
-                    val previousHeight = rowBounds[favoriteEntryRowKey(memo.id, previous)]?.height ?: currentBounds.height
+                    val previousHeight = favoriteRowHeightPx(memo, previous)
                     if (-dragOffsetY <= previousHeight / 2f) break
                     if (!moveFavoriteEntry(memo, entry, -1)) break
+                    movedDuringDrag = true
                     dragOffsetY += previousHeight
-                    moved = true
+                    val newListIndex = favoriteListIndexForEntry(memo, entry)
+                    if (newListIndex >= 0 && newListIndex <= listState.firstVisibleItemIndex) {
+                        scope.launch { listState.scrollToItem(newListIndex) }
+                    }
                 }
                 else -> break
             }
         }
-        if (moved) {
+        val group = favoriteVisibleGroup(memo, entry.checked)
+        val currentIndex = group.indexOfFirst { it.id == entry.id }
+        if (currentIndex == 0 && dragOffsetY < 0f) {
+            dragOffsetY = 0f
+        } else if (currentIndex == group.lastIndex && dragOffsetY > 0f) {
+            dragOffsetY = 0f
+        }
+        if (movedDuringDrag) {
             onChanged()
-            keepDraggedCenterAfterLayout(rowKey, visualCenterY)
+            if (dragDirectionY < 0 && isFavoriteDraggedNearTopEdge(memo, entry)) {
+                pinFavoriteDraggedEntryToTopAfterLayout(memo, entry)
+            } else if (restoreFirstVisibleAfterMove && targetVisualTop != null) {
+                keepFavoriteDraggedEntryAtVisualTopAfterLayout(
+                    memo = memo,
+                    entry = entry,
+                    visualTop = targetVisualTop,
+                    firstVisibleIndex = firstVisibleIndexAtDragStart,
+                    firstVisibleScrollOffset = firstVisibleOffsetAtDragStart
+                )
+            } else if (targetVisualTop != null) {
+                keepFavoriteDraggedEntryAtVisualTopAfterLayout(memo, entry, targetVisualTop)
+            } else {
+                keepFavoriteDraggedEntryVisibleAfterLayout(memo, entry)
+            }
+        } else {
+            keepFavoriteDraggedEntryVisible(memo, entry)
         }
     }
 
@@ -6614,39 +6889,127 @@ private fun FavoriteItemsOverview(
         draggingEntryId = null
         dragOffsetX = 0f
         dragOffsetY = 0f
+        dragDirectionY = 0
+        autoReorderDirection = 0
+        topClampGapY = 0f
+        bottomClampGapY = 0f
+        onItemDragActiveChange(false)
+    }
+
+    LaunchedEffect(draggingMemoId, draggingEntryId, autoReorderDirection) {
+        while (draggingMemoId != null && draggingEntryId != null && autoReorderDirection != 0) {
+            delay(DragAutoReorderDelayMillis)
+            val memo = memos.firstOrNull { it.id == draggingMemoId } ?: break
+            val entry = memo.entries.firstOrNull { it.id == draggingEntryId && it.checked == draggingChecked } ?: break
+            val group = favoriteVisibleGroup(memo, entry.checked)
+            val index = group.indexOfFirst { it.id == entry.id }
+            val direction = autoReorderDirection
+            val neighbor = group.getOrNull(index + direction)
+            if (index < 0 || neighbor == null) {
+                autoReorderDirection = 0
+                break
+            }
+            val neighborHeight = favoriteRowHeightPx(memo, neighbor)
+            if (moveFavoriteEntry(memo, entry, direction)) {
+                onChanged()
+                if (direction < 0) {
+                    pinFavoriteDraggedEntryToTopAfterLayout(memo, entry)
+                } else {
+                    dragOffsetY -= neighborHeight
+                    dragOffsetY += neighborHeight
+                    scope.launch { listState.scrollBy(neighborHeight) }
+                    keepFavoriteDraggedEntryVisibleAfterLayout(entry = entry, memo = memo, accumulateBottomGap = false)
+                }
+                val updatedGroup = favoriteVisibleGroup(memo, entry.checked)
+                val updatedIndex = updatedGroup.indexOfFirst { it.id == entry.id }
+                autoReorderDirection = if (updatedGroup.getOrNull(updatedIndex + direction) != null) {
+                    direction
+                } else {
+                    0
+                }
+            } else {
+                autoReorderDirection = 0
+                break
+            }
+        }
     }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         state = listState,
-        contentPadding = PaddingValues(bottom = 18.dp)
+        contentPadding = PaddingValues(bottom = DetailListExtraBottom)
     ) {
-        items(memos, key = { it.id }) { memo ->
-            FavoriteMemoItemsSection(
-                memo = memo,
-                rowBounds = rowBounds,
-                draggingMemoId = draggingMemoId,
-                draggingEntryId = draggingEntryId,
-                dragOffsetX = dragOffsetX,
-                dragOffsetY = dragOffsetY,
-                onComplete = { entry ->
-                    entry.checked = true
-                    ensureDisplayBlankEntry(memo)
-                    onChanged()
-                },
-                onRestoreDone = { entry ->
-                    entry.checked = false
-                    ensureDisplayBlankEntry(memo)
-                    onChanged()
-                },
-                onMoveToTrash = { entry ->
-                    moveFavoriteEntryToTrash(memo, entry)
-                    onChanged()
-                },
-                onDragStart = ::startDrag,
-                onDrag = ::drag,
-                onDragEnd = ::endDrag
-            )
+        memos.forEach { memo ->
+            val activeEntries = favoriteVisibleGroup(memo, checked = false)
+            val doneEntries = favoriteVisibleGroup(memo, checked = true)
+            item(key = favoriteMemoHeaderKey(memo.id)) {
+                FavoriteMemoItemsHeader(memo = memo, activeCount = activeEntries.size, doneCount = doneEntries.size)
+            }
+            if (activeEntries.isEmpty() && doneEntries.isEmpty()) {
+                item(key = favoriteEmptyRowKey(memo.id)) {
+                    FavoriteEmptyEntryRow()
+                }
+            } else {
+                itemsIndexed(
+                    items = activeEntries,
+                    key = { _, entry -> favoriteEntryRowKey(memo.id, entry) }
+                ) { index, entry ->
+                    FavoriteActiveEntryRow(
+                        memoId = memo.id,
+                        entry = entry,
+                        number = index + 1,
+                        rowBounds = rowBounds,
+                        isDragging = draggingMemoId == memo.id && draggingEntryId == entry.id,
+                        dragOffsetX = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetX else 0f,
+                        dragOffsetY = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetY else 0f,
+                        onComplete = {
+                            entry.checked = true
+                            ensureDisplayBlankEntry(memo)
+                            onChanged()
+                        },
+                        onTrash = {
+                            moveFavoriteEntryToTrash(memo, entry)
+                            onChanged()
+                        },
+                        onDragStart = { startDrag(memo, entry) },
+                        onDrag = { deltaX, deltaY -> drag(memo, entry, deltaX, deltaY) },
+                        onDragEnd = { endDrag(memo, entry) }
+                    )
+                }
+                if (doneEntries.isNotEmpty()) {
+                    item(key = favoriteDoneLabelKey(memo.id)) {
+                        FavoriteDoneEntryLabel()
+                    }
+                    items(
+                        items = doneEntries,
+                        key = { entry -> favoriteEntryRowKey(memo.id, entry) }
+                    ) { entry ->
+                        FavoriteDoneEntryRow(
+                            memoId = memo.id,
+                            entry = entry,
+                            rowBounds = rowBounds,
+                            isDragging = draggingMemoId == memo.id && draggingEntryId == entry.id,
+                            dragOffsetX = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetX else 0f,
+                            dragOffsetY = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetY else 0f,
+                            onRestore = {
+                                entry.checked = false
+                                ensureDisplayBlankEntry(memo)
+                                onChanged()
+                            },
+                            onTrash = {
+                                moveFavoriteEntryToTrash(memo, entry)
+                                onChanged()
+                            },
+                            onDragStart = { startDrag(memo, entry) },
+                            onDrag = { deltaX, deltaY -> drag(memo, entry, deltaX, deltaY) },
+                            onDragEnd = { endDrag(memo, entry) }
+                        )
+                    }
+                }
+            }
+            item(key = favoriteSectionSpacerKey(memo.id)) {
+                FavoriteSectionSpacer()
+            }
         }
     }
 }
@@ -6732,6 +7095,77 @@ private fun FavoriteTrashOverview(
 }
 
 @Composable
+private fun FavoriteMemoItemsHeader(
+    memo: ShoppingMemo,
+    activeCount: Int,
+    doneCount: Int
+) {
+    val totalCount = activeCount + doneCount
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF0277BD))
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FavoriteMemoIcon(memo = memo)
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 10.dp)
+            ) {
+                Text(
+                    memo.title.ifBlank { "\u30BF\u30A4\u30C8\u30EB\u672A\u5165\u529B" },
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    lineHeight = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "${doneCount}/$totalCount \u4EF6 \u5B8C\u4E86",
+                    color = Color(0xFFE3F2FD),
+                    fontSize = 14.sp,
+                    lineHeight = 17.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+        Divider(color = Color(0xFFE0E0E0))
+    }
+}
+
+@Composable
+private fun FavoriteDoneEntryLabel() {
+    Text(
+        text = "\u5B8C\u4E86\u30A2\u30A4\u30C6\u30E0",
+        color = Color(0xFFD32F2F),
+        fontSize = 15.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(horizontal = 18.dp, vertical = 10.dp)
+    )
+}
+
+@Composable
+private fun FavoriteSectionSpacer() {
+    Spacer(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(12.dp)
+            .background(Color(0xFFF5F5F5))
+    )
+}
+
+@Composable
 private fun FavoriteMemoItemsSection(
     memo: ShoppingMemo,
     rowBounds: MutableMap<String, Rect>,
@@ -6791,20 +7225,22 @@ private fun FavoriteMemoItemsSection(
             FavoriteEmptyEntryRow()
         } else {
             activeEntries.forEachIndexed { index, entry ->
-                FavoriteActiveEntryRow(
-                    memoId = memo.id,
-                    entry = entry,
-                    number = index + 1,
-                    rowBounds = rowBounds,
-                    isDragging = draggingMemoId == memo.id && draggingEntryId == entry.id,
-                    dragOffsetX = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetX else 0f,
-                    dragOffsetY = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetY else 0f,
-                    onComplete = { onComplete(entry) },
-                    onTrash = { onMoveToTrash(entry) },
-                    onDragStart = { onDragStart(memo, entry) },
-                    onDrag = { deltaX, deltaY -> onDrag(memo, entry, deltaX, deltaY) },
-                    onDragEnd = { onDragEnd(memo, entry) }
-                )
+                key(favoriteEntryRowKey(memo.id, entry)) {
+                    FavoriteActiveEntryRow(
+                        memoId = memo.id,
+                        entry = entry,
+                        number = index + 1,
+                        rowBounds = rowBounds,
+                        isDragging = draggingMemoId == memo.id && draggingEntryId == entry.id,
+                        dragOffsetX = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetX else 0f,
+                        dragOffsetY = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetY else 0f,
+                        onComplete = { onComplete(entry) },
+                        onTrash = { onMoveToTrash(entry) },
+                        onDragStart = { onDragStart(memo, entry) },
+                        onDrag = { deltaX, deltaY -> onDrag(memo, entry, deltaX, deltaY) },
+                        onDragEnd = { onDragEnd(memo, entry) }
+                    )
+                }
             }
             if (doneEntries.isNotEmpty()) {
                 Text(
@@ -6817,19 +7253,21 @@ private fun FavoriteMemoItemsSection(
                         .padding(horizontal = 18.dp, vertical = 10.dp)
                 )
                 doneEntries.forEach { entry ->
-                    FavoriteDoneEntryRow(
-                        memoId = memo.id,
-                        entry = entry,
-                        rowBounds = rowBounds,
-                        isDragging = draggingMemoId == memo.id && draggingEntryId == entry.id,
-                        dragOffsetX = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetX else 0f,
-                        dragOffsetY = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetY else 0f,
-                        onRestore = { onRestoreDone(entry) },
-                        onTrash = { onMoveToTrash(entry) },
-                        onDragStart = { onDragStart(memo, entry) },
-                        onDrag = { deltaX, deltaY -> onDrag(memo, entry, deltaX, deltaY) },
-                        onDragEnd = { onDragEnd(memo, entry) }
-                    )
+                    key(favoriteEntryRowKey(memo.id, entry)) {
+                        FavoriteDoneEntryRow(
+                            memoId = memo.id,
+                            entry = entry,
+                            rowBounds = rowBounds,
+                            isDragging = draggingMemoId == memo.id && draggingEntryId == entry.id,
+                            dragOffsetX = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetX else 0f,
+                            dragOffsetY = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetY else 0f,
+                            onRestore = { onRestoreDone(entry) },
+                            onTrash = { onMoveToTrash(entry) },
+                            onDragStart = { onDragStart(memo, entry) },
+                            onDrag = { deltaX, deltaY -> onDrag(memo, entry, deltaX, deltaY) },
+                            onDragEnd = { onDragEnd(memo, entry) }
+                        )
+                    }
                 }
             }
         }
@@ -6906,6 +7344,13 @@ private fun FavoriteMemoTrashSection(
 
 @Composable
 private fun FavoriteMemoIcon(memo: ShoppingMemo) {
+    if (isTemporaryMemo(memo)) {
+        MemoNoteIcon(
+            sizeScale = 0.72f,
+            modifier = Modifier.size(46.dp)
+        )
+        return
+    }
     Box(
         modifier = Modifier
             .size(46.dp)
@@ -6918,30 +7363,31 @@ private fun FavoriteMemoIcon(memo: ShoppingMemo) {
 }
 
 private fun favoriteVisibleGroup(memo: ShoppingMemo, checked: Boolean): List<ShoppingEntry> {
-    return memo.entries.filter { it.name.isNotBlank() && it.checked == checked }
+    return visibleEntryGroup(memo, checked)
 }
 
 private fun favoriteEntryRowKey(memoId: String, entry: ShoppingEntry): String {
     return "$memoId:${if (entry.checked) "done" else "active"}:${entry.id}"
 }
 
-private fun moveFavoriteEntry(memo: ShoppingMemo, entry: ShoppingEntry, direction: Int): Boolean {
-    if (entry.name.isBlank()) return false
-    val active = memo.entries.filter { it.name.isNotBlank() && !it.checked }.toMutableList()
-    val done = memo.entries.filter { it.name.isNotBlank() && it.checked }.toMutableList()
-    val targetGroup = if (entry.checked) done else active
-    val from = targetGroup.indexOfFirst { it.id == entry.id }
-    if (from < 0) return false
-    val to = (from + direction).coerceIn(0, targetGroup.lastIndex)
-    if (from == to) return false
-    val moving = targetGroup.removeAt(from)
-    targetGroup.add(to, moving)
+private fun favoriteMemoHeaderKey(memoId: String): String {
+    return "$memoId:header"
+}
 
-    memo.entries.clear()
-    memo.entries.addAll(active)
-    memo.entries.addAll(done)
-    ensureDisplayBlankEntry(memo)
-    return true
+private fun favoriteEmptyRowKey(memoId: String): String {
+    return "$memoId:empty"
+}
+
+private fun favoriteDoneLabelKey(memoId: String): String {
+    return "$memoId:done-label"
+}
+
+private fun favoriteSectionSpacerKey(memoId: String): String {
+    return "$memoId:spacer"
+}
+
+private fun moveFavoriteEntry(memo: ShoppingMemo, entry: ShoppingEntry, direction: Int): Boolean {
+    return moveEntryWithinVisibleGroup(memo, entry, direction)
 }
 
 private fun moveFavoriteEntryToTrash(memo: ShoppingMemo, entry: ShoppingEntry) {
@@ -7387,6 +7833,7 @@ private fun MicrophoneSettingsScreen(
 private fun OneHandSettingsFrame(
     oneHandModeEnabled: Boolean,
     listAtTop: Boolean,
+    gestureBlocked: Boolean = false,
     content: @Composable (Modifier) -> Unit
 ) {
     val density = LocalDensity.current
@@ -7400,6 +7847,10 @@ private fun OneHandSettingsFrame(
 
     LaunchedEffect(oneHandModeEnabled) {
         if (!oneHandModeEnabled) oneHandOffsetPx = 0f
+    }
+
+    LaunchedEffect(gestureBlocked) {
+        if (gestureBlocked) oneHandFlingGeneration++
     }
 
     fun startOneHandFling(initialVelocityY: Float) {
@@ -7440,8 +7891,8 @@ private fun OneHandSettingsFrame(
             Modifier
                 .fillMaxSize()
                 .graphicsLayer { translationY = oneHandOffsetPx }
-                .pointerInput(oneHandModeEnabled, oneHandMaxOffsetPx) {
-                    if (!oneHandModeEnabled) return@pointerInput
+                .pointerInput(oneHandModeEnabled, oneHandMaxOffsetPx, gestureBlocked) {
+                    if (!oneHandModeEnabled || gestureBlocked) return@pointerInput
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                         oneHandFlingGeneration++
