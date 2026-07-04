@@ -3,6 +3,12 @@ package com.ttjapan.kaimonomemo.ui.app
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
+import android.net.Uri
+import android.os.Environment
 import android.util.Log
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -103,6 +109,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
@@ -125,6 +132,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
@@ -157,11 +165,14 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.ttjapan.kaimonomemo.R
 import com.ttjapan.kaimonomemo.data.MicrophoneSettings
 import com.ttjapan.kaimonomemo.data.assignDefaultTitleIfBlank
+import com.ttjapan.kaimonomemo.data.loadKeepCompletedItemsInPlace
 import com.ttjapan.kaimonomemo.data.loadLeftHandModeEnabled
 import com.ttjapan.kaimonomemo.data.loadMicrophoneSettings
+import com.ttjapan.kaimonomemo.data.loadModeSelectionCompleted
 import com.ttjapan.kaimonomemo.data.loadMemos
 import com.ttjapan.kaimonomemo.data.loadOneHandModeEnabled
 import com.ttjapan.kaimonomemo.data.loadSimpleModeEnabled
@@ -178,6 +189,8 @@ import com.ttjapan.kaimonomemo.data.saveMemos
 import com.ttjapan.kaimonomemo.data.saveOneHandModeEnabled
 import com.ttjapan.kaimonomemo.data.saveSimpleModeEnabled
 import com.ttjapan.kaimonomemo.data.saveHomeTitlePattern
+import com.ttjapan.kaimonomemo.data.saveKeepCompletedItemsInPlace
+import com.ttjapan.kaimonomemo.data.saveModeSelectionCompleted
 import com.ttjapan.kaimonomemo.data.saveSupportAdWatchDate
 import com.ttjapan.kaimonomemo.data.saveTemporaryTitlePattern
 import com.ttjapan.kaimonomemo.model.ShoppingEntry
@@ -186,6 +199,7 @@ import com.ttjapan.kaimonomemo.voice.ContinuousSpeechController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -303,6 +317,11 @@ private val GoldHighlightColors = listOf(
     Color(0xFFFFFDE7),
     Color(0xFFFFF59D),
     Color(0xFFFFFDE7)
+)
+private val PurpleHighlightColors = listOf(
+    Color(0xFFF7F2FF),
+    Color(0xFFE7DCFF),
+    Color(0xFFF7F2FF)
 )
 private val HomeTitleHeaderHeight = 52.dp
 private val HomeProgressBarHeight = 44.dp
@@ -449,7 +468,19 @@ private fun pruneBlankEntries(memo: ShoppingMemo) {
     memo.deletedEntries.removeAll { it.name.isBlank() }
 }
 
-private fun ensureDisplayBlankEntry(memo: ShoppingMemo): ShoppingEntry? {
+private fun ensureDisplayBlankEntry(memo: ShoppingMemo, keepCompletedItemsInPlace: Boolean = false): ShoppingEntry? {
+    if (keepCompletedItemsInPlace) {
+        val visible = memo.entries.filter { it.name.isNotBlank() }
+        val blank = memo.entries.firstOrNull { it.name.isBlank() }
+        memo.entries.clear()
+        memo.entries.addAll(visible)
+        if (visible.isEmpty()) {
+            val displayBlank = blank ?: ShoppingEntry(name = "")
+            memo.entries.add(displayBlank)
+            return displayBlank
+        }
+        return null
+    }
     val active = memo.entries.filter { it.name.isNotBlank() && !it.checked }
     val done = memo.entries.filter { it.name.isNotBlank() && it.checked }
     val blank = memo.entries.firstOrNull { it.name.isBlank() }
@@ -469,8 +500,35 @@ private fun visibleEntryGroup(memo: ShoppingMemo, checked: Boolean): List<Shoppi
     return memo.entries.filter { it.name.isNotBlank() && it.checked == checked }
 }
 
-private fun moveEntryWithinVisibleGroup(memo: ShoppingMemo, entry: ShoppingEntry, direction: Int): Boolean {
+private fun displayEntryGroup(
+    memo: ShoppingMemo,
+    entry: ShoppingEntry,
+    keepCompletedItemsInPlace: Boolean
+): List<ShoppingEntry> {
+    return memo.entries.filter {
+        it.name.isNotBlank() && (keepCompletedItemsInPlace || it.checked == entry.checked)
+    }
+}
+
+private fun moveEntryWithinVisibleGroup(
+    memo: ShoppingMemo,
+    entry: ShoppingEntry,
+    direction: Int,
+    keepCompletedItemsInPlace: Boolean = false
+): Boolean {
     if (entry.name.isBlank()) return false
+    if (keepCompletedItemsInPlace) {
+        val targetGroup = displayEntryGroup(memo, entry, keepCompletedItemsInPlace = true).toMutableList()
+        val from = targetGroup.indexOfFirst { it.id == entry.id }
+        if (from < 0) return false
+        val to = (from + direction).coerceIn(0, targetGroup.lastIndex)
+        if (from == to) return false
+        val moving = targetGroup.removeAt(from)
+        targetGroup.add(to, moving)
+        memo.entries.clear()
+        memo.entries.addAll(targetGroup)
+        return true
+    }
     val active = visibleEntryGroup(memo, checked = false).toMutableList()
     val done = visibleEntryGroup(memo, checked = true).toMutableList()
     val targetGroup = if (entry.checked) done else active
@@ -488,7 +546,15 @@ private fun moveEntryWithinVisibleGroup(memo: ShoppingMemo, entry: ShoppingEntry
     return true
 }
 
-private fun requestBlankEntry(memo: ShoppingMemo): ShoppingEntry {
+private fun requestBlankEntry(memo: ShoppingMemo, keepCompletedItemsInPlace: Boolean = false): ShoppingEntry {
+    if (keepCompletedItemsInPlace) {
+        val visible = memo.entries.filter { it.name.isNotBlank() }
+        val blank = memo.entries.firstOrNull { it.name.isBlank() } ?: ShoppingEntry(name = "")
+        memo.entries.clear()
+        memo.entries.addAll(visible)
+        memo.entries.add(blank)
+        return blank
+    }
     val active = memo.entries.filter { it.name.isNotBlank() && !it.checked }
     val done = memo.entries.filter { it.name.isNotBlank() && it.checked }
     val blank = memo.entries.firstOrNull { it.name.isBlank() } ?: ShoppingEntry(name = "")
@@ -497,6 +563,33 @@ private fun requestBlankEntry(memo: ShoppingMemo): ShoppingEntry {
     memo.entries.add(blank)
     memo.entries.addAll(done)
     return blank
+}
+
+private fun restoreEntryToActiveBottom(
+    memo: ShoppingMemo,
+    entry: ShoppingEntry,
+    keepCompletedItemsInPlace: Boolean = false
+): ShoppingEntry {
+    val restored = entry.copy(checked = false)
+    if (keepCompletedItemsInPlace) {
+        val visible = memo.entries
+            .filter { it.id != entry.id && it.name.isNotBlank() }
+            .toMutableList()
+        visible.add(restored)
+        memo.entries.clear()
+        memo.entries.addAll(visible)
+        return restored
+    }
+    val active = memo.entries
+        .filter { it.id != entry.id && it.name.isNotBlank() && !it.checked }
+        .toMutableList()
+    val done = memo.entries
+        .filter { it.id != entry.id && it.name.isNotBlank() && it.checked }
+    active.add(restored)
+    memo.entries.clear()
+    memo.entries.addAll(active)
+    memo.entries.addAll(done)
+    return restored
 }
 
 @Composable
@@ -530,6 +623,8 @@ fun ShoppingMemoApp() {
     var microphoneSessionActive by remember { mutableStateOf(false) }
     var editHelpVisible by remember { mutableStateOf(loadEditHelpVisible(context)) }
     var largeFontEnabled by remember { mutableStateOf(loadLargeFontEnabled(context)) }
+    var keepCompletedItemsInPlace by remember { mutableStateOf(loadKeepCompletedItemsInPlace(context)) }
+    var modeSelectionCompleted by remember { mutableStateOf(loadModeSelectionCompleted(context)) }
     var homeTopScrollRequest by remember { mutableStateOf(0) }
     var supportAdVideoVisible by remember { mutableStateOf(false) }
     val recentlyMovedEntryIds = remember { mutableStateListOf<String>() }
@@ -574,6 +669,8 @@ fun ShoppingMemoApp() {
         simpleModeEnabled = enabled
         applyTemporaryTitleForMode(temporaryMemo, enabled)
         saveSimpleModeEnabled(context, enabled)
+        saveModeSelectionCompleted(context, true)
+        modeSelectionCompleted = true
         persist()
     }
     fun updateLeftHandMode(enabled: Boolean) {
@@ -590,6 +687,10 @@ fun ShoppingMemoApp() {
             microphoneSessionActive = false
         }
         saveMicrophoneSettings(context, settings)
+    }
+    fun updateKeepCompletedItemsInPlace(enabled: Boolean) {
+        keepCompletedItemsInPlace = enabled
+        saveKeepCompletedItemsInPlace(context, enabled)
     }
     fun updateEditHelpVisible(visible: Boolean) {
         editHelpVisible = visible
@@ -690,6 +791,7 @@ fun ShoppingMemoApp() {
                             Screen.TitlePatternPicker -> titlePatternReturnScreen
                             else -> currentScreen
                         },
+                        simpleModeEnabled = simpleModeEnabled,
                         onHome = {
                             if (currentScreen == Screen.Detail) finishDetail() else currentScreen = Screen.Home
                         },
@@ -713,13 +815,16 @@ fun ShoppingMemoApp() {
                         MemoDetailScreen(
                             memo = temporaryMemo,
                             oneHandModeEnabled = oneHandModeEnabled,
+                            leftHandModeEnabled = leftHandModeEnabled,
                             microphoneEnabled = !microphoneSettings.disabled,
                             microphoneSettings = microphoneSettings,
                             microphoneSessionActive = microphoneSessionActive,
                             onMicrophoneSessionActiveChange = { microphoneSessionActive = it },
+                            keepCompletedItemsInPlace = keepCompletedItemsInPlace,
                             titlePattern = temporaryTitlePattern,
                             onTitlePatternClick = { openTitlePatternPicker(TitlePatternTarget.Temporary) },
                             recentlyMovedEntryIds = emptySet(),
+                            onClearRecentlyMovedEntryHighlight = {},
                             onFinish = ::finishTemporaryHome,
                             onChanged = ::persist
                         )
@@ -776,17 +881,20 @@ fun ShoppingMemoApp() {
                         MemoDetailScreen(
                             memo = selectedMemo,
                             oneHandModeEnabled = oneHandModeEnabled,
+                            leftHandModeEnabled = leftHandModeEnabled,
                             microphoneEnabled = !microphoneSettings.disabled,
                             microphoneSettings = microphoneSettings,
                             microphoneSessionActive = microphoneSessionActive,
                             onMicrophoneSessionActiveChange = { microphoneSessionActive = it },
-                            titlePattern = if (isTemporaryMemo(selectedMemo)) temporaryTitlePattern else null,
+                            keepCompletedItemsInPlace = keepCompletedItemsInPlace,
+                            titlePattern = if (isTemporaryMemo(selectedMemo)) temporaryTitlePattern else homeTitlePattern,
                             onTitlePatternClick = if (isTemporaryMemo(selectedMemo)) {
                                 { openTitlePatternPicker(TitlePatternTarget.Temporary) }
                             } else {
                                 null
                             },
                             recentlyMovedEntryIds = recentlyMovedEntryIds.toSet(),
+                            onClearRecentlyMovedEntryHighlight = { recentlyMovedEntryIds.remove(it) },
                             onFinish = ::finishDetail,
                             onChanged = ::persist
                         )
@@ -812,6 +920,7 @@ fun ShoppingMemoApp() {
                             onBack = { currentScreen = Screen.Home },
                             onSelect = { pattern ->
                                 imageEditingMemo.imagePattern = pattern
+                                imageEditingMemo.customImageUri = null
                                 persist()
                                 currentScreen = Screen.Home
                             }
@@ -840,6 +949,8 @@ fun ShoppingMemoApp() {
                     onLeftHandModeChanged = ::updateLeftHandMode,
                     largeFontEnabled = largeFontEnabled,
                     onLargeFontChanged = ::updateLargeFont,
+                    keepCompletedItemsInPlace = keepCompletedItemsInPlace,
+                    onKeepCompletedItemsInPlaceChanged = ::updateKeepCompletedItemsInPlace,
                     microphoneSettings = microphoneSettings,
                     onMicrophoneSettingsChanged = ::updateMicrophoneSettings,
                     onResetOperationHelp = { updateEditHelpVisible(true) }
@@ -847,13 +958,20 @@ fun ShoppingMemoApp() {
                 Screen.Favorites -> FavoritesScreen(
                     memos = listOf(temporaryMemo) + activeMemos.filter { it.favorite },
                     oneHandModeEnabled = oneHandModeEnabled,
+                    leftHandModeEnabled = leftHandModeEnabled,
                     microphoneEnabled = !microphoneSettings.disabled,
                     microphoneSessionActive = microphoneSessionActive,
                     onMicrophoneSessionActiveChange = { microphoneSessionActive = it },
+                    keepCompletedItemsInPlace = keepCompletedItemsInPlace,
                     onHome = { currentScreen = Screen.Home },
                     onChanged = ::persist
                 )
             }
+        }
+        if (!modeSelectionCompleted) {
+            InitialModeSelectionDialog(
+                onSelect = { enabled -> updateSimpleMode(enabled) }
+            )
         }
     }
 }
@@ -884,6 +1002,7 @@ private fun AdvancedHomeScreen(
     onCardImageChanged: () -> Unit,
     onToggleFavorite: (ShoppingMemo) -> Unit
 ) {
+    val context = LocalContext.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val tabs = listOf("アイテム", "ゴミ箱")
@@ -909,6 +1028,9 @@ private fun AdvancedHomeScreen(
     var imageChangeBounds by remember { mutableStateOf<Rect?>(null) }
     var cardTrashBounds by remember { mutableStateOf<Rect?>(null) }
     var pendingImageMemo by remember { mutableStateOf<ShoppingMemo?>(null) }
+    var pendingCameraMemoId by remember { mutableStateOf<String?>(null) }
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingFolderMemoId by remember { mutableStateOf<String?>(null) }
     var homeBounds by remember { mutableStateOf<Rect?>(null) }
     var homeControlBounds by remember { mutableStateOf<Rect?>(null) }
     var temporaryListBounds by remember { mutableStateOf<Rect?>(null) }
@@ -918,7 +1040,7 @@ private fun AdvancedHomeScreen(
     var oneHandOffsetPx by remember { mutableStateOf(0f) }
     var oneHandFlingGeneration by remember { mutableStateOf(0) }
     var controlScrollReachedTopInGesture by remember { mutableStateOf(false) }
-    val homeOneHandModeEnabled = false
+    val homeOneHandModeEnabled = oneHandModeEnabled && pagerState.currentPage == 1
     val oneHandMaxOffsetPx = if (homeOneHandModeEnabled) {
         (homeHeightPx * OneHandMaxOffsetRatio).coerceAtLeast(0f)
     } else {
@@ -938,11 +1060,40 @@ private fun AdvancedHomeScreen(
     val latestTemporaryListBounds by rememberUpdatedState(temporaryListBounds)
     val latestDraggingId by rememberUpdatedState(draggingId)
     val sourceMemoIds = memos.map { it.id }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        val memo = memos.firstOrNull { it.id == pendingCameraMemoId }
+        val uri = pendingCameraUri
+        if (success && memo != null && uri != null) {
+            memo.customImageUri = uri.toString()
+            onCardImageChanged()
+        }
+        pendingCameraMemoId = null
+        pendingCameraUri = null
+        pendingImageMemo = null
+    }
+    val folderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        val memo = memos.firstOrNull { it.id == pendingFolderMemoId }
+        val importedUri = uri?.let { importCardImageUri(context, it) }
+        if (importedUri != null && memo != null) {
+            memo.customImageUri = importedUri.toString()
+            onCardImageChanged()
+        }
+        pendingFolderMemoId = null
+        pendingImageMemo = null
+    }
     val orderedHomeMemos = run {
         val byId = memos.associateBy { it.id }
         val ordered = homeMemoOrderIds.mapNotNull { byId[it] }
         if (ordered.size == memos.size) ordered else memos
     }
+    val homeHeaderMemo = if (pagerState.currentPage == 0) {
+        homeCarouselSelectedMemoId
+            ?.let { selectedId -> orderedHomeMemos.firstOrNull { it.id == selectedId } }
+            ?: orderedHomeMemos.firstOrNull()
+    } else {
+        null
+    }
+    val homeHeaderTitle = homeHeaderMemo?.let { memoDisplayTitle(it) } ?: "買い物メモ"
     val latestOrderedHomeMemoIds by rememberUpdatedState(orderedHomeMemos.map { it.id })
 
     fun formatHomeMemoId(id: String?): String {
@@ -1242,6 +1393,13 @@ private fun AdvancedHomeScreen(
         if (!homeOneHandModeEnabled) oneHandOffsetPx = 0f
     }
 
+    LaunchedEffect(pagerState.currentPage) {
+        if (pagerState.currentPage == 0) {
+            oneHandOffsetPx = 0f
+            oneHandFlingGeneration++
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1264,7 +1422,7 @@ private fun AdvancedHomeScreen(
                     }
                 }
             }
-            .pointerInput(pagerState.currentPage, dragActive) {
+            .pointerInput(pagerState.currentPage, dragActive, sourceMemoIds.size) {
                 if (dragActive) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -1278,7 +1436,15 @@ private fun AdvancedHomeScreen(
                         totalX += delta.x
                         totalY += delta.y
                         if (kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
-                            if (pagerState.currentPage == 1 && totalX > DetailBackSwipeThresholdPx) {
+                            if (
+                                pagerState.currentPage == 0 &&
+                                sourceMemoIds.isEmpty() &&
+                                kotlin.math.abs(totalX) > DetailBackSwipeThresholdPx
+                            ) {
+                                change.consume()
+                                scope.launch { pagerState.animateScrollToPage(1) }
+                                break
+                            } else if (pagerState.currentPage == 1 && totalX > DetailBackSwipeThresholdPx) {
                                 change.consume()
                                 scope.launch { pagerState.animateScrollToPage(0) }
                                 break
@@ -1351,7 +1517,7 @@ private fun AdvancedHomeScreen(
                 }
         ) {
             TitlePatternHeader(
-                title = "買い物メモ",
+                title = homeHeaderTitle,
                 pattern = titlePattern,
                 onClick = onTitlePatternClick
             )
@@ -1430,7 +1596,13 @@ private fun AdvancedHomeScreen(
                         onOpenMemo = onOpenMemo,
                         onToggleFavorite = onToggleFavorite,
                         onAddMemo = onAddMemo,
-                        onShowTrash = { scope.launch { pagerState.animateScrollToPage(1) } },
+                        onShowTrash = {
+                            scope.launch {
+                                oneHandOffsetPx = 0f
+                                oneHandFlingGeneration++
+                                pagerState.animateScrollToPage(1)
+                            }
+                        },
                         leftHandModeEnabled = leftHandModeEnabled,
                         oneHandOffset = oneHandOffsetDp,
                         showCardDropTargets = draggingId != null,
@@ -1533,14 +1705,18 @@ private fun AdvancedHomeScreen(
             memo = memo,
             onDismiss = { pendingImageMemo = null },
             onCamera = {
-                memo.imagePattern = 8
-                onCardImageChanged()
-                pendingImageMemo = null
+                val uri = createCardImageCaptureUri(context)
+                if (uri != null) {
+                    pendingCameraMemoId = memo.id
+                    pendingCameraUri = uri
+                    pendingImageMemo = null
+                    cameraLauncher.launch(uri)
+                }
             },
             onFolder = {
-                memo.imagePattern = 9
-                onCardImageChanged()
+                pendingFolderMemoId = memo.id
                 pendingImageMemo = null
+                folderLauncher.launch("image/*")
             },
             onPattern = {
                 pendingImageMemo = null
@@ -1727,6 +1903,7 @@ private fun HomeMemoCarouselPage(
     var confirmedDragSwapCandidateId by remember { mutableStateOf<String?>(null) }
     var dragAllowedSwapCandidateId by remember { mutableStateOf<String?>(null) }
     var dragStartWindowPoint by remember { mutableStateOf<Offset?>(null) }
+    var twoCardSideSign by remember(memoIdKey) { mutableStateOf(1) }
     val swapPreviewProgress = remember { Animatable(0f) }
     val swapActivationPaddingPx = with(density) { 64.dp.toPx() }
     val swapActivationDistancePx = with(density) { 132.dp.toPx() }
@@ -1894,14 +2071,20 @@ private fun HomeMemoCarouselPage(
             .background(Color.White)
             .pointerInput(count, draggingId, leftHandModeEnabled) {
                 if (count <= 1 || draggingId != null) return@pointerInput
+                var dragTotalX = 0f
                 detectDragGestures(
                     onDragStart = {
+                        dragTotalX = 0f
                         carouselDragging = true
                         scope.launch { carouselOffset.stop() }
                     },
                     onDrag = { change, amount ->
                         change.consume()
                         val horizontalDelta = if (leftHandModeEnabled) -amount.x else amount.x
+                        dragTotalX += horizontalDelta
+                        if (count == 2 && kotlin.math.abs(amount.x) > 0.5f) {
+                            twoCardSideSign = if (amount.x < 0f) -1 else 1
+                        }
                         val dominantDelta = horizontalDelta + amount.y * 0.35f
                         val step = (dominantDelta / 150f).coerceIn(-0.9f, 0.9f)
                         scope.launch {
@@ -1910,7 +2093,15 @@ private fun HomeMemoCarouselPage(
                     },
                     onDragEnd = {
                         scope.launch {
-                            val target = carouselOffset.value.roundToInt().toFloat()
+                            val target = if (count == 2 && kotlin.math.abs(dragTotalX) > 48f) {
+                                if (dragTotalX < 0f) {
+                                    kotlin.math.floor(carouselOffset.value.toDouble()).toFloat()
+                                } else {
+                                    kotlin.math.ceil(carouselOffset.value.toDouble()).toFloat()
+                                }
+                            } else {
+                                carouselOffset.value.roundToInt().toFloat()
+                            }
                             carouselOffset.animateTo(
                                 targetValue = target,
                                 animationSpec = spring(
@@ -1978,32 +2169,31 @@ private fun HomeMemoCarouselPage(
             )
         }
 
-        HomeCarouselOrbitGuide(
-            centerX = displayedOrbitCenterX,
-            centerY = orbitCenterY,
-            radiusX = radiusX,
-            radiusY = radiusY,
-            modifier = Modifier
-                .matchParentSize()
-                .zIndex(1f)
-        )
-
-        if (count == 0) {
-            Box(
+        if (count > 0) {
+            HomeCarouselOrbitGuide(
+                centerX = displayedOrbitCenterX,
+                centerY = orbitCenterY,
+                radiusX = radiusX,
+                radiusY = radiusY,
                 modifier = Modifier
-                    .align(Alignment.Center)
-                    .width(cardWidth),
-            ) {
-                AddMemoCard(compact = true, contentScale = HomeOperationScale, onClick = onAddMemo)
-            }
-        } else {
+                    .matchParentSize()
+                    .zIndex(1f)
+            )
+        }
+
+        if (count > 0) {
             memos.forEachIndexed { index, memo ->
-                val relative = circularRelativeIndex(
+                val rawRelative = circularRelativeIndex(
                     index = index,
                     frontIndex = frontIndex,
                     fractionalOffset = fractionalOffset,
                     count = count
                 )
+                val relative = if (count == 2 && kotlin.math.abs(rawRelative) >= 0.99f) {
+                    twoCardSideSign.toFloat()
+                } else {
+                    rawRelative
+                }
                 val absRelative = kotlin.math.abs(relative)
                 val isPreviewCandidate = memo.id == activeDragSwapCandidateId
                 val visible = count <= 6 || absRelative <= 2.6f || isPreviewCandidate
@@ -2145,48 +2335,46 @@ private fun HomeMemoCarouselPage(
             )
         }
 
-        if (count > 0) {
-            val controlWidth = ((maxWidth * 0.34f).coerceIn(104.dp, 150.dp)) * HomeOperationScale
-            val memoButtonSize = (controlWidth * 0.68f).coerceIn(68.dp * HomeOperationScale, 92.dp * HomeOperationScale)
-            Column(
+        val controlWidth = ((maxWidth * 0.34f).coerceIn(104.dp, 150.dp)) * HomeOperationScale
+        val memoButtonSize = (controlWidth * 0.68f).coerceIn(68.dp * HomeOperationScale, 92.dp * HomeOperationScale)
+        Column(
+            modifier = Modifier
+                .align(if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd)
+                .padding(12.dp)
+                .width(controlWidth)
+                .zIndex(200f)
+                .onGloballyPositioned { onControlPositioned(it.boundsInWindow()) },
+            horizontalAlignment = if (leftHandModeEnabled) Alignment.Start else Alignment.End
+        ) {
+            HomeTrashDisplayButton(
+                onClick = onShowTrash,
+                sizeScale = HomeOperationScale,
+                modifier = Modifier.size(86.dp * HomeOperationScale)
+            )
+            Spacer(Modifier.height(10.dp * HomeOperationScale))
+            Box(
                 modifier = Modifier
-                    .align(if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd)
-                    .padding(12.dp)
-                    .width(controlWidth)
-                    .zIndex(200f)
-                    .onGloballyPositioned { onControlPositioned(it.boundsInWindow()) },
-                horizontalAlignment = if (leftHandModeEnabled) Alignment.Start else Alignment.End
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
             ) {
-                HomeTrashDisplayButton(
-                    onClick = onShowTrash,
+                HomeMemoButton(
+                    onClick = onOpenTemporaryMemo,
                     sizeScale = HomeOperationScale,
-                    modifier = Modifier.size(86.dp * HomeOperationScale)
-                )
-                Spacer(Modifier.height(10.dp * HomeOperationScale))
-                Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f)
-                ) {
-                    HomeMemoButton(
-                        onClick = onOpenTemporaryMemo,
-                        sizeScale = HomeOperationScale,
-                        modifier = Modifier
-                            .size(memoButtonSize)
-                            .align(if (leftHandModeEnabled) Alignment.TopEnd else Alignment.TopStart)
-                            .offset(
-                                x = if (leftHandModeEnabled) memoButtonSize * 0.62f else -(memoButtonSize * 0.62f),
-                                y = -(memoButtonSize * 0.62f)
-                            )
-                            .zIndex(1f)
-                    )
-                    Spacer(
-                        modifier = Modifier
-                            .matchParentSize()
-                            .align(if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd)
-                    )
-                }
-                }
+                        .size(memoButtonSize)
+                        .align(if (leftHandModeEnabled) Alignment.TopEnd else Alignment.TopStart)
+                        .offset(
+                            x = if (leftHandModeEnabled) memoButtonSize * 0.62f else -(memoButtonSize * 0.62f),
+                            y = -(memoButtonSize * 0.62f)
+                        )
+                        .zIndex(1f)
+                )
+                Spacer(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .align(if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd)
+                )
+            }
         }
     }
     }
@@ -2258,8 +2446,8 @@ private fun HomeSelectedMemoBackdrop(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
-            ShoppingPatternImage(
-                pattern = memo.imagePattern,
+            MemoCardImage(
+                memo = memo,
                 modifier = Modifier.size(52.dp)
             )
         }
@@ -2314,10 +2502,8 @@ private fun HomeSelectedMemoBackdropRow(
 ) {
     val sizes = LocalAppFontSizes.current
     val rowBackground = when {
-        entry.checked -> Color(0xFFE8E8E8)
-        index % 3 == 0 -> Color(0xFFEAF5FF)
-        index % 3 == 1 -> Color(0xFFFFEEEE)
-        else -> Color.White
+        entry.checked -> CompletedEntryBackground
+        else -> entryColorMarkBackground(entry.colorMark)
     }
     Row(
         modifier = Modifier
@@ -2417,7 +2603,7 @@ private fun FittingSingleLineText(
             textAlign = textAlign,
             maxLines = 1,
             softWrap = false,
-            overflow = TextOverflow.Clip,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.fillMaxWidth(),
             onTextLayout = { result ->
                 if (result.didOverflowWidth && fontSizeValue > minFontSize.value) {
@@ -2660,7 +2846,7 @@ private fun DeletedMemoCard(
                     .background(Color(0xFFFFEBEE), RoundedCornerShape(8.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                ShoppingPatternImage(pattern = memo.imagePattern, modifier = Modifier.size(56.dp))
+                MemoCardImage(memo = memo, modifier = Modifier.size(56.dp))
             }
             Column(
                 modifier = Modifier
@@ -3286,7 +3472,7 @@ private fun TemporaryPreviewEntry(
         modifier = Modifier
             .fillMaxWidth()
             .graphicsLayer { alpha = if (isDragging) 0.35f else 1f }
-            .background(if (done) CompletedEntryBackground else Color.Transparent)
+            .background(if (done) CompletedEntryBackground else entryColorMarkBackground(entry.colorMark))
             .onGloballyPositioned { rowBounds = it.boundsInWindow() }
             .pointerInput(entry.id) {
                 detectDragGesturesAfterLongPress(
@@ -3348,7 +3534,7 @@ private fun MemoCard(
                 contentAlignment = Alignment.Center
             ) {
                 Text("🛒", fontSize = (48f * sizeScale).sp)
-                ShoppingPatternImage(pattern = memo.imagePattern, modifier = Modifier.fillMaxSize())
+                MemoCardImage(memo = memo, modifier = Modifier.fillMaxSize())
                 IconButton(
                     onClick = onToggleFavorite,
                     modifier = Modifier
@@ -3606,6 +3792,126 @@ private fun shoppingPatternImageResId(kind: ShoppingVisualKind): Int {
 }
 
 @Composable
+private fun MemoCardImage(
+    memo: ShoppingMemo,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop
+) {
+    val customImageUri = memo.customImageUri
+    if (customImageUri.isNullOrBlank()) {
+        ShoppingPatternImage(pattern = memo.imagePattern, modifier = modifier)
+        return
+    }
+
+    val context = LocalContext.current
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, context, customImageUri) {
+        value = loadCardImageBitmap(context, customImageUri)
+    }
+    val loadedBitmap = bitmap
+    if (loadedBitmap != null) {
+        Image(
+            bitmap = loadedBitmap,
+            contentDescription = null,
+            contentScale = contentScale,
+            modifier = modifier
+        )
+    } else {
+        ShoppingPatternImage(pattern = memo.imagePattern, modifier = modifier)
+    }
+}
+
+private fun createCardImageCaptureUri(context: Context): Uri? {
+    val imageFile = createCardImageFile(context) ?: return null
+    return cardImageUriForFile(context, imageFile)
+}
+
+private fun importCardImageUri(context: Context, sourceUri: Uri): Uri? {
+    val imageFile = createCardImageFile(context) ?: return null
+    val copied = runCatching {
+        context.contentResolver.openInputStream(sourceUri)?.use { input ->
+            imageFile.outputStream().use { output -> input.copyTo(output) }
+        } != null
+    }.getOrDefault(false)
+    if (!copied) return null
+    return cardImageUriForFile(context, imageFile)
+}
+
+private fun createCardImageFile(context: Context): File? {
+    val picturesDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: return null
+    val imageDir = File(picturesDir, "card_images")
+    if (!imageDir.exists() && !imageDir.mkdirs()) return null
+    return File(imageDir, "card_${System.currentTimeMillis()}.jpg")
+}
+
+private fun cardImageUriForFile(context: Context, imageFile: File): Uri? {
+    return runCatching {
+        FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            imageFile
+        )
+    }.getOrNull()
+}
+
+private fun loadCardImageBitmap(context: Context, uriString: String): ImageBitmap? {
+    return runCatching {
+        val uri = Uri.parse(uriString)
+        val orientation = readImageExifOrientation(context, uri)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, bounds)
+        }
+        val sampleSize = calculateBitmapSampleSize(bounds.outWidth, bounds.outHeight, maxSize = 1024)
+        val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val bitmap = context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, options)
+        } ?: return@runCatching null
+        applyExifOrientation(bitmap, orientation).asImageBitmap()
+    }.getOrNull()
+}
+
+private fun readImageExifOrientation(context: Context, uri: Uri): Int {
+    return runCatching {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            ExifInterface(input).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            )
+        } ?: ExifInterface.ORIENTATION_NORMAL
+    }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+}
+
+private fun applyExifOrientation(bitmap: Bitmap, orientation: Int): Bitmap {
+    val matrix = Matrix()
+    when (orientation) {
+        ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.preScale(-1f, 1f)
+        ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+        ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.preScale(1f, -1f)
+        ExifInterface.ORIENTATION_TRANSPOSE -> {
+            matrix.postRotate(90f)
+            matrix.preScale(-1f, 1f)
+        }
+        ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+        ExifInterface.ORIENTATION_TRANSVERSE -> {
+            matrix.postRotate(270f)
+            matrix.preScale(-1f, 1f)
+        }
+        ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+        else -> return bitmap
+    }
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+}
+
+private fun calculateBitmapSampleSize(width: Int, height: Int, maxSize: Int): Int {
+    if (width <= 0 || height <= 0) return 1
+    var sampleSize = 1
+    while (width / sampleSize > maxSize || height / sampleSize > maxSize) {
+        sampleSize *= 2
+    }
+    return sampleSize
+}
+
+@Composable
 private fun ShoppingPatternImage(pattern: Int, modifier: Modifier = Modifier) {
     val patterns = activeShoppingVisualPatterns()
     val item = patterns[((pattern % patterns.size) + patterns.size) % patterns.size]
@@ -3804,14 +4110,14 @@ private fun TitlePatternImage(
 private fun TitlePatternHeader(
     title: String,
     pattern: Int,
-    onClick: () -> Unit,
+    onClick: (() -> Unit)? = null,
     trailingContent: (@Composable BoxScope.() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.White)
-            .clickable(onClick = onClick)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
     ) {
         BoxWithConstraints(
             modifier = Modifier
@@ -4503,18 +4809,22 @@ private fun OneHandModeBackdrop(modifier: Modifier = Modifier) {
 private fun MemoDetailScreen(
     memo: ShoppingMemo,
     oneHandModeEnabled: Boolean,
+    leftHandModeEnabled: Boolean,
     microphoneEnabled: Boolean,
     microphoneSettings: MicrophoneSettings,
     microphoneSessionActive: Boolean,
     onMicrophoneSessionActiveChange: (Boolean) -> Unit,
+    keepCompletedItemsInPlace: Boolean,
     titlePattern: Int? = null,
     onTitlePatternClick: (() -> Unit)? = null,
     recentlyMovedEntryIds: Set<String>,
+    onClearRecentlyMovedEntryHighlight: (String) -> Unit,
     onFinish: () -> Unit,
     onChanged: () -> Unit
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
+    val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val imeBottom = with(density) { WindowInsets.ime.getBottom(this).toDp() }
     val imeVisible = imeBottom > 0.dp
@@ -4534,9 +4844,13 @@ private fun MemoDetailScreen(
     val titleFocusRequester = remember { FocusRequester() }
     var selectedEntryId by remember { mutableStateOf<String?>(null) }
     var voiceEditingEntryId by remember(memo.id) { mutableStateOf<String?>(null) }
+    val recentlyRestoredEntryIds = remember(memo.id) { mutableStateListOf<String>() }
     val entryCursorRanges = remember(memo.id) { mutableStateMapOf<String, TextRange>() }
     var voiceTarget by remember { mutableStateOf(if (memo.title.isBlank()) VoiceTarget.Title else VoiceTarget.Item) }
+    var titleFocused by remember(memo.id) { mutableStateOf(false) }
     var focusedItemRequestId by remember { mutableStateOf<String?>(null) }
+    var restoredScrollTargetEntryId by remember(memo.id) { mutableStateOf<String?>(null) }
+    var restoredScrollSerial by remember(memo.id) { mutableStateOf(0) }
     var addButtonScrollRequest by remember { mutableStateOf(0) }
     var itemDragActive by remember { mutableStateOf(false) }
     var activeListAtTop by remember(memo.id) { mutableStateOf(true) }
@@ -4553,10 +4867,15 @@ private fun MemoDetailScreen(
     val oneHandBackdropHeight = with(density) { oneHandOffsetPx.toDp() }
     val currentListAtTop = if (pagerState.currentPage == 0) activeListAtTop else deletedListAtTop
     val latestCurrentListAtTop by rememberUpdatedState(currentListAtTop)
-    val activeItemCount = memo.entries.count { it.name.isNotBlank() && !it.checked }
+    val activeItemCount = memo.entries.count {
+        it.name.isNotBlank() && (keepCompletedItemsInPlace || !it.checked)
+    }
+    val titleVoiceHighlighted = microphoneEnabled &&
+        microphoneSessionActive &&
+        (voiceTarget == VoiceTarget.Title || memo.title.isBlank())
 
     fun editableEntry(): ShoppingEntry {
-        return requestBlankEntry(memo)
+        return requestBlankEntry(memo, keepCompletedItemsInPlace)
     }
 
     fun moveToItemInput() {
@@ -4576,13 +4895,31 @@ private fun MemoDetailScreen(
         detailVoiceScrollSerial++
     }
 
+    fun clearDetailItemEditing(hideKeyboard: Boolean = false) {
+        focusManager.clearFocus(force = true)
+        if (hideKeyboard) {
+            keyboardController?.hide()
+        }
+        selectedEntryId = null
+        voiceEditingEntryId = null
+        focusedItemRequestId = null
+    }
+
+    fun clearDetailTransientHighlight(entryId: String) {
+        recentlyRestoredEntryIds.remove(entryId)
+        onClearRecentlyMovedEntryHighlight(entryId)
+    }
+
     fun requestActiveItemJump(direction: Int) {
+        clearDetailItemEditing(hideKeyboard = true)
         activeItemJumpDirection = direction
         activeItemJumpSerial++
     }
 
     fun focusItemByVoiceNumber(number: Int) {
-        val entry = memo.entries.filter { it.name.isNotBlank() && !it.checked }.getOrNull(number - 1) ?: return
+        val entry = memo.entries
+            .filter { it.name.isNotBlank() && (keepCompletedItemsInPlace || !it.checked) }
+            .getOrNull(number - 1) ?: return
         stopDetailVoiceScroll()
         selectedEntryId = entry.id
         voiceEditingEntryId = entry.id
@@ -4599,10 +4936,9 @@ private fun MemoDetailScreen(
         entry.name = entry.name.substring(0, start) + text + entry.name.substring(end)
         val cursor = start + text.length
         entryCursorRanges[entry.id] = TextRange(cursor)
-        selectedEntryId = entry.id
-        voiceEditingEntryId = entry.id
         voiceTarget = VoiceTarget.Item
-        ensureDisplayBlankEntry(memo)
+        ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
+        clearDetailItemEditing(hideKeyboard = true)
     }
 
     fun handleVoiceText(text: String) {
@@ -4615,13 +4951,15 @@ private fun MemoDetailScreen(
 
         if (voiceTarget == VoiceTarget.Title || memo.title.isBlank()) {
             memo.title = cleaned
-            val entry = editableEntry()
-            selectedEntryId = entry.id
+            editableEntry()
+            clearDetailItemEditing(hideKeyboard = true)
             focusedItemRequestId = null
             voiceTarget = VoiceTarget.Item
         } else {
             val targetEntryId = selectedEntryId ?: voiceEditingEntryId
-            val selectedEntry = memo.entries.firstOrNull { it.id == targetEntryId && !it.checked }
+            val selectedEntry = memo.entries.firstOrNull {
+                it.id == targetEntryId && (!it.checked || keepCompletedItemsInPlace)
+            }
             if (selectedEntry != null) {
                 insertVoiceTextIntoEntry(selectedEntry, cleaned)
             } else {
@@ -4655,14 +4993,19 @@ private fun MemoDetailScreen(
         }
     }
 
-    LaunchedEffect(memo.id) {
-        if (memo.title.isBlank()) titleFocusRequester.requestFocus()
+    LaunchedEffect(memo.id, titlePattern) {
+        if (memo.title.isBlank()) {
+            titleFocusRequester.requestFocus()
+        }
     }
 
-    LaunchedEffect(microphoneEnabled, microphoneSessionActive, memo.id) {
-        if (!microphoneEnabled || !microphoneSessionActive) {
+    LaunchedEffect(microphoneEnabled, microphoneSessionActive, pagerState.currentPage, memo.id) {
+        if (!microphoneEnabled || !microphoneSessionActive || pagerState.currentPage != 0) {
             speechController.stop()
             stopDetailVoiceScroll()
+            if (microphoneSessionActive && pagerState.currentPage != 0) {
+                onMicrophoneSessionActiveChange(false)
+            }
             return@LaunchedEffect
         }
         if (!speechController.isRunning) {
@@ -4813,9 +5156,18 @@ private fun MemoDetailScreen(
                     memo.deletedEntries.clear()
                     onChanged()
                 },
+                microphoneHighlighted = titleVoiceHighlighted,
+                editingHighlighted = titleFocused,
                 onTitleFocused = {
+                    selectedEntryId = null
+                    voiceEditingEntryId = null
+                    focusedItemRequestId = null
+                    titleFocused = true
                     speechController.stop()
                     voiceTarget = VoiceTarget.Title
+                },
+                onTitleFocusCleared = {
+                    titleFocused = false
                 },
                 onChanged = onChanged
             )
@@ -4876,15 +5228,20 @@ private fun MemoDetailScreen(
                         onVoiceScrollFinished = { stopDetailVoiceScroll() },
                         activeItemJumpDirection = activeItemJumpDirection,
                         activeItemJumpSerial = activeItemJumpSerial,
-                        highlightedEntryId = if (microphoneEnabled && microphoneSessionActive) {
+                        highlightedEntryId = if (microphoneEnabled && microphoneSessionActive && !titleVoiceHighlighted) {
                             selectedEntryId ?: voiceEditingEntryId
                         } else {
                             null
                         },
-                        highlightAddListItem = microphoneEnabled && microphoneSessionActive && (selectedEntryId ?: voiceEditingEntryId) == null,
+                        highlightAddListItem = microphoneEnabled &&
+                            microphoneSessionActive &&
+                            !titleVoiceHighlighted &&
+                            (selectedEntryId ?: voiceEditingEntryId) == null,
+                        keepCompletedItemsInPlace = keepCompletedItemsInPlace,
                         onFocusedItemConsumed = { focusedItemRequestId = null },
                         onSelect = { selectedEntryId = it },
                         onRequestFocus = { focusedItemRequestId = it },
+                        onEditingDismissed = { clearDetailItemEditing(hideKeyboard = true) },
                         entryCursorRanges = entryCursorRanges,
                         onEntryCursorChanged = { entryId, range -> entryCursorRanges[entryId] = range },
                         onEntryFocused = { entryId ->
@@ -4901,6 +5258,10 @@ private fun MemoDetailScreen(
                         onListAtTopChanged = { activeListAtTop = it },
                         editTapSuppressionSerial = oneHandMoveSerial,
                         recentlyMovedEntryIds = recentlyMovedEntryIds,
+                        recentlyRestoredEntryIds = recentlyRestoredEntryIds.toSet(),
+                        restoredScrollTargetEntryId = restoredScrollTargetEntryId,
+                        restoredScrollSerial = restoredScrollSerial,
+                        onClearTransientHighlight = ::clearDetailTransientHighlight,
                         onChanged = onChanged
                     )
                 } else {
@@ -4908,18 +5269,17 @@ private fun MemoDetailScreen(
                         memo = memo,
                         onItemDragActiveChange = { itemDragActive = it },
                         onListAtTopChanged = { deletedListAtTop = it },
-                        voiceScrollDirection = if (pagerState.currentPage == 1) detailVoiceScrollDirection else 0,
+                        voiceScrollDirection = 0,
                         voiceScrollSerial = detailVoiceScrollSerial,
                         onVoiceScrollFinished = { stopDetailVoiceScroll() },
                         onRestore = {
                             memo.deletedEntries.remove(it)
-                            val restored = it.copy(checked = false)
-                            val blankIndex = memo.entries.indexOfFirst { entry -> entry.name.isBlank() }
-                            val insertIndex = if (blankIndex >= 0) blankIndex else memo.entries.indexOfFirst { entry -> entry.checked }.let { doneIndex ->
-                                if (doneIndex >= 0) doneIndex else memo.entries.size
-                            }
-                            memo.entries.add(insertIndex, restored)
-                            ensureDisplayBlankEntry(memo)
+                            val restored = restoreEntryToActiveBottom(memo, it, keepCompletedItemsInPlace)
+                            recentlyRestoredEntryIds.remove(restored.id)
+                            recentlyRestoredEntryIds.add(restored.id)
+                            restoredScrollTargetEntryId = restored.id
+                            restoredScrollSerial++
+                            scope.launch { pagerState.animateScrollToPage(0) }
                             onChanged()
                         },
                         onErase = {
@@ -4932,22 +5292,28 @@ private fun MemoDetailScreen(
         }
 
         val showActiveItemJumpButtons = pagerState.currentPage == 0 && activeItemCount >= 20
-        if (microphoneEnabled || showActiveItemJumpButtons) {
+        val showDetailMicrophone = microphoneEnabled && pagerState.currentPage == 0
+        if (showDetailMicrophone || showActiveItemJumpButtons) {
+            val fabAlignment = if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd
             Row(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = fabBottomPadding),
+                    .align(fabAlignment)
+                    .padding(
+                        start = if (leftHandModeEnabled) 12.dp else 0.dp,
+                        end = if (leftHandModeEnabled) 0.dp else 12.dp,
+                        bottom = fabBottomPadding
+                    ),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
                 if (showActiveItemJumpButtons) {
                     JumpFab(
-                        label = "⇑",
+                        label = if (leftHandModeEnabled) "⇑" else "⇓",
                         sizeScale = HomeOperationScale,
-                        onClick = { requestActiveItemJump(-1) }
+                        onClick = { requestActiveItemJump(if (leftHandModeEnabled) -1 else 1) }
                     )
                 }
-                if (microphoneEnabled) {
+                if (showDetailMicrophone) {
                     MicFab(
                         controller = speechController,
                         sizeScale = HomeOperationScale,
@@ -4962,12 +5328,26 @@ private fun MemoDetailScreen(
                                 stopDetailVoiceScroll()
                                 onMicrophoneSessionActiveChange(false)
                             } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                voiceEditingEntryId = selectedEntryId ?: voiceEditingEntryId
+                                if (memo.title.isBlank() || titleFocused) {
+                                    selectedEntryId = null
+                                    voiceEditingEntryId = null
+                                    focusedItemRequestId = null
+                                    voiceTarget = VoiceTarget.Title
+                                } else {
+                                    voiceEditingEntryId = selectedEntryId ?: voiceEditingEntryId
+                                }
                                 keyboardController?.hide()
                                 speechController.start()
                                 onMicrophoneSessionActiveChange(true)
                             } else {
-                                voiceEditingEntryId = selectedEntryId ?: voiceEditingEntryId
+                                if (memo.title.isBlank() || titleFocused) {
+                                    selectedEntryId = null
+                                    voiceEditingEntryId = null
+                                    focusedItemRequestId = null
+                                    voiceTarget = VoiceTarget.Title
+                                } else {
+                                    voiceEditingEntryId = selectedEntryId ?: voiceEditingEntryId
+                                }
                                 permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                         }
@@ -4975,9 +5355,9 @@ private fun MemoDetailScreen(
                 }
                 if (showActiveItemJumpButtons) {
                     JumpFab(
-                        label = "⇓",
+                        label = if (leftHandModeEnabled) "⇓" else "⇑",
                         sizeScale = HomeOperationScale,
-                        onClick = { requestActiveItemJump(1) }
+                        onClick = { requestActiveItemJump(if (leftHandModeEnabled) 1 else -1) }
                     )
                 }
             }
@@ -4993,9 +5373,20 @@ private fun DetailTitleArea(
     onTitlePatternClick: (() -> Unit)?,
     showEraseButton: Boolean,
     onErase: () -> Unit,
+    microphoneHighlighted: Boolean,
+    editingHighlighted: Boolean,
     onTitleFocused: () -> Unit,
+    onTitleFocusCleared: () -> Unit,
     onChanged: () -> Unit
 ) {
+    val titleSparkleAlpha = rememberSparkleAlpha(microphoneHighlighted)
+    val titleHighlightModifier = when {
+        microphoneHighlighted -> Modifier
+            .goldAddItemBackground(true)
+            .sparkleOverlay(titleSparkleAlpha * 0.45f)
+        editingHighlighted -> Modifier.background(focusedEntryBackground())
+        else -> Modifier
+    }
     val titleInput: @Composable RowScope.() -> Unit = {
         BoxWithConstraints(
             modifier = Modifier
@@ -5012,13 +5403,14 @@ private fun DetailTitleArea(
                     .fillMaxWidth()
                     .focusRequester(titleFocusRequester)
                     .onFocusChanged {
-                        if (it.isFocused) onTitleFocused()
+                        if (it.isFocused) onTitleFocused() else onTitleFocusCleared()
                     },
                 textStyle = TextStyle(
                     fontSize = titleFontSizeValue.sp,
                     lineHeight = (titleFontSizeValue * 1.23f).sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color.Black
+                    color = Color(0xFF3E2D22),
+                    textAlign = TextAlign.Center
                 ),
                 singleLine = true,
                 maxLines = 1,
@@ -5032,18 +5424,26 @@ private fun DetailTitleArea(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 0.dp)
+                            .padding(horizontal = 14.dp, vertical = 0.dp),
+                        contentAlignment = Alignment.Center
                     ) {
                         if (memo.title.isBlank()) {
                             Text(
-                                "タイトルを入力してください",
+                                "タイトル未入力",
                                 color = Color(0xFFC0C4CC),
                                 fontSize = titleFontSizeValue.sp,
                                 maxLines = 1,
-                                softWrap = false
+                                softWrap = false,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
                             )
                         }
-                        innerTextField()
+                        Box(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            innerTextField()
+                        }
                     }
                 }
             )
@@ -5065,36 +5465,29 @@ private fun DetailTitleArea(
         }
     }
 
-    if (titlePattern != null && onTitlePatternClick != null) {
+    if (titlePattern != null) {
         TitlePatternHeader(
-            title = TemporaryMemoTitle,
+            title = "",
             pattern = titlePattern,
-            onClick = onTitlePatternClick
+            onClick = null
         ) {
-            if (showEraseButton) {
-                Button(
-                    onClick = onErase,
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 12.dp)
-                        .height(36.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    border = BorderStroke(1.dp, Color(0xFFD32F2F)),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFFFEBEE),
-                        contentColor = Color(0xFFD32F2F)
-                    ),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
-                ) {
-                    Text("全消去", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                }
-            }
+            Box(modifier = Modifier.matchParentSize().then(titleHighlightModifier))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(HomeTitleHeaderHeight)
+                    .align(Alignment.Center)
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                content = titleInput
+            )
         }
     } else {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(HomeTitleHeaderHeight)
+                .then(titleHighlightModifier)
                 .padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             content = titleInput
@@ -5116,9 +5509,11 @@ private fun ActiveItemsPage(
     activeItemJumpSerial: Int,
     highlightedEntryId: String?,
     highlightAddListItem: Boolean,
+    keepCompletedItemsInPlace: Boolean,
     onFocusedItemConsumed: () -> Unit,
     onSelect: (String?) -> Unit,
     onRequestFocus: (String) -> Unit,
+    onEditingDismissed: () -> Unit,
     entryCursorRanges: Map<String, TextRange>,
     onEntryCursorChanged: (String, TextRange) -> Unit,
     onEntryFocused: (String) -> Unit,
@@ -5128,6 +5523,10 @@ private fun ActiveItemsPage(
     onListAtTopChanged: (Boolean) -> Unit,
     editTapSuppressionSerial: Int,
     recentlyMovedEntryIds: Set<String>,
+    recentlyRestoredEntryIds: Set<String>,
+    restoredScrollTargetEntryId: String?,
+    restoredScrollSerial: Int,
+    onClearTransientHighlight: (String) -> Unit,
     onChanged: () -> Unit
 ) {
     val density = LocalDensity.current
@@ -5153,8 +5552,34 @@ private fun ActiveItemsPage(
     var previousBottomPadding by remember { mutableStateOf(bottomPadding) }
     val listAtTop = !listState.canScrollBackward
 
+    fun activeEntriesForDisplay(): List<ShoppingEntry> {
+        return if (keepCompletedItemsInPlace) {
+            memo.entries.toList()
+        } else {
+            memo.entries.filter { !it.checked }
+        }
+    }
+
+    fun activeVisibleEntriesForJump(): List<ShoppingEntry> {
+        return memo.entries.filter {
+            it.name.isNotBlank() && (keepCompletedItemsInPlace || !it.checked)
+        }
+    }
+
+    fun detailEntryRowKey(entry: ShoppingEntry): Any {
+        return if (keepCompletedItemsInPlace || !entry.checked) entry.id else "done-${entry.id}"
+    }
+
+    fun reorderGroup(entry: ShoppingEntry): List<ShoppingEntry> {
+        return displayEntryGroup(memo, entry, keepCompletedItemsInPlace)
+    }
+
+    fun addListItemIndex(): Int {
+        return activeEntriesForDisplay().size + listTopAnchorIndexOffset
+    }
+
     fun removeUnusedBlankEntry(): Boolean {
-        if (memo.entries.none { it.name.isNotBlank() && !it.checked }) return false
+        if (memo.entries.none { it.name.isNotBlank() && (keepCompletedItemsInPlace || !it.checked) }) return false
         val removed = memo.entries.removeAll { it.name.isBlank() }
         if (removed) {
             onSelect(null)
@@ -5165,6 +5590,11 @@ private fun ActiveItemsPage(
 
     LaunchedEffect(listAtTop) {
         onListAtTopChanged(listAtTop)
+    }
+
+    LaunchedEffect(selectedEntryId, highlightedEntryId) {
+        selectedEntryId?.let(onClearTransientHighlight)
+        highlightedEntryId?.let(onClearTransientHighlight)
     }
 
     LaunchedEffect(voiceScrollSerial, voiceScrollDirection) {
@@ -5187,15 +5617,15 @@ private fun ActiveItemsPage(
 
     LaunchedEffect(activeItemJumpSerial) {
         if (activeItemJumpSerial <= 0 || activeItemJumpDirection == 0) return@LaunchedEffect
-        val visibleActiveEntries = memo.entries.filter { !it.checked }
+        val visibleActiveEntries = activeVisibleEntriesForJump()
         val targetEntry = if (activeItemJumpDirection < 0) {
-            visibleActiveEntries.firstOrNull { it.name.isNotBlank() }
+            visibleActiveEntries.firstOrNull()
         } else {
-            visibleActiveEntries.lastOrNull { it.name.isNotBlank() }
+            visibleActiveEntries.lastOrNull()
         } ?: return@LaunchedEffect
         val visibleIndex = visibleActiveEntries.indexOfFirst { it.id == targetEntry.id }
         if (visibleIndex >= 0) {
-            listState.animateScrollToItem(index = visibleIndex + listTopAnchorIndexOffset)
+            listState.scrollToItem(index = visibleIndex + listTopAnchorIndexOffset)
         }
     }
 
@@ -5205,12 +5635,25 @@ private fun ActiveItemsPage(
         return -targetY
     }
 
+    LaunchedEffect(restoredScrollSerial, restoredScrollTargetEntryId, bottomPadding, memo.entries.size) {
+        if (restoredScrollSerial <= 0) return@LaunchedEffect
+        val targetId = restoredScrollTargetEntryId ?: return@LaunchedEffect
+        val visibleActiveEntries = activeEntriesForDisplay()
+        val visibleIndex = visibleActiveEntries.indexOfFirst { it.id == targetId }
+        if (visibleIndex >= 0) {
+            listState.animateScrollToItem(
+                index = visibleIndex + listTopAnchorIndexOffset,
+                scrollOffset = bottomAlignedOffset(rowLiftPx)
+            )
+        }
+    }
+
     LaunchedEffect(memo.entries.size, focusedItemRequestId, selectedEntryId) {
         val editingBlank = memo.entries.any {
             it.name.isBlank() && (it.id == focusedItemRequestId || it.id == selectedEntryId)
         }
         if (!editingBlank) {
-            ensureDisplayBlankEntry(memo)
+            ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
         }
     }
 
@@ -5225,14 +5668,12 @@ private fun ActiveItemsPage(
 
     LaunchedEffect(scrollAnchor, bottomPadding, memo.entries.size) {
         if (scrollAnchor != ScrollAnchor.AddButton) return@LaunchedEffect
-        val addIndex = memo.entries.count { !it.checked } + listTopAnchorIndexOffset
-        listState.animateScrollToItem(index = addIndex, scrollOffset = bottomAlignedOffset(addButtonLiftPx))
+        listState.animateScrollToItem(index = addListItemIndex(), scrollOffset = bottomAlignedOffset(addButtonLiftPx))
     }
 
     LaunchedEffect(addButtonScrollRequest, bottomPadding, memo.entries.size) {
         if (addButtonScrollRequest <= 0) return@LaunchedEffect
-        val addIndex = memo.entries.count { !it.checked } + listTopAnchorIndexOffset
-        listState.animateScrollToItem(index = addIndex, scrollOffset = bottomAlignedOffset(addButtonLiftPx))
+        listState.animateScrollToItem(index = addListItemIndex(), scrollOffset = bottomAlignedOffset(addButtonLiftPx))
     }
 
     LaunchedEffect(bottomPadding) {
@@ -5262,13 +5703,13 @@ private fun ActiveItemsPage(
     }
 
     fun moveEntry(entry: ShoppingEntry, direction: Int): Boolean {
-        if (!moveEntryWithinVisibleGroup(memo, entry, direction)) return false
+        if (!moveEntryWithinVisibleGroup(memo, entry, direction, keepCompletedItemsInPlace)) return false
         onChanged()
         return true
     }
 
     fun visibleItemHeightPx(entry: ShoppingEntry): Float {
-        val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
+        val itemKey = detailEntryRowKey(entry)
         return listState.layoutInfo.visibleItemsInfo
             .firstOrNull { it.key == itemKey }
             ?.size
@@ -5277,6 +5718,10 @@ private fun ActiveItemsPage(
     }
 
     fun listIndexForEntry(entry: ShoppingEntry): Int {
+        if (keepCompletedItemsInPlace) {
+            val index = activeEntriesForDisplay().indexOfFirst { it.id == entry.id }
+            return if (index < 0) -1 else index + listTopAnchorIndexOffset
+        }
         return if (entry.checked) {
             val doneIndex = memo.entries.filter { it.checked && it.name.isNotBlank() }.indexOf(entry)
             val uncheckedCount = memo.entries.count { !it.checked }
@@ -5288,7 +5733,7 @@ private fun ActiveItemsPage(
     }
 
     fun gentlyKeepDraggedEntryVisible(entry: ShoppingEntry, accumulateBottomGap: Boolean = true) {
-        val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
+        val itemKey = detailEntryRowKey(entry)
         val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
             ?: return
         val viewportStart = listState.layoutInfo.viewportStartOffset
@@ -5359,7 +5804,7 @@ private fun ActiveItemsPage(
     }
 
     fun draggedVisualTop(entry: ShoppingEntry): Float? {
-        val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
+        val itemKey = detailEntryRowKey(entry)
         val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
             ?: return null
         return itemInfo.offset + draggingOffsetY
@@ -5379,7 +5824,7 @@ private fun ActiveItemsPage(
                 withFrameNanos { }
                 if (draggingEntryId != entry.id) return@launch
             }
-            val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
+            val itemKey = detailEntryRowKey(entry)
             val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
                 ?: return@launch
             draggingOffsetY = visualTop - itemInfo.offset
@@ -5388,7 +5833,7 @@ private fun ActiveItemsPage(
     }
 
     fun isDraggedNearTopEdge(entry: ShoppingEntry): Boolean {
-        val itemKey = if (entry.checked) "done-${entry.id}" else entry.id
+            val itemKey = detailEntryRowKey(entry)
         val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
             ?: return false
         val viewportStart = listState.layoutInfo.viewportStartOffset
@@ -5409,7 +5854,7 @@ private fun ActiveItemsPage(
             listState.scrollToItem(targetIndex)
             withFrameNanos { }
             if (draggingEntryId == entry.id) {
-                val group = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
+                val group = reorderGroup(entry)
                 val groupIndex = group.indexOf(entry)
                 autoReorderDirection = if (dragDirectionY < 0 && groupIndex > 0) -1 else 0
             }
@@ -5468,7 +5913,7 @@ private fun ActiveItemsPage(
         var restoreFirstVisibleAfterMove = false
 
         while (true) {
-            val reorderGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
+            val reorderGroup = reorderGroup(entry)
             val index = reorderGroup.indexOf(entry)
             if (index < 0) return
 
@@ -5487,8 +5932,8 @@ private fun ActiveItemsPage(
                         restoreFirstVisibleAfterMove = true
                     }
                     draggingOffsetY -= nextHeight
-                    if (!entry.checked) {
-                        val newIndex = memo.entries.filter { it.name.isNotBlank() && !it.checked }.indexOf(entry)
+                    if (keepCompletedItemsInPlace || !entry.checked) {
+                        val newIndex = activeVisibleEntriesForJump().indexOf(entry)
                         val newListIndex = newIndex + listTopAnchorIndexOffset
                         if (newIndex >= 0 && newListIndex <= listState.firstVisibleItemIndex) {
                             scope.launch { listState.scrollToItem(newListIndex) }
@@ -5509,8 +5954,8 @@ private fun ActiveItemsPage(
                 if (moveEntry(entry, -1)) {
                     movedDuringDrag = true
                     draggingOffsetY += previousHeight
-                    if (!entry.checked) {
-                        val newIndex = memo.entries.filter { it.name.isNotBlank() && !it.checked }.indexOf(entry)
+                    if (keepCompletedItemsInPlace || !entry.checked) {
+                        val newIndex = activeVisibleEntriesForJump().indexOf(entry)
                         val newListIndex = newIndex + listTopAnchorIndexOffset
                         if (newIndex >= 0 && newListIndex <= listState.firstVisibleItemIndex) {
                             scope.launch { listState.scrollToItem(newListIndex) }
@@ -5525,7 +5970,7 @@ private fun ActiveItemsPage(
             }
         }
 
-        val reorderGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
+        val reorderGroup = reorderGroup(entry)
         val index = reorderGroup.indexOf(entry)
         if (index == 0 && draggingOffsetY < 0f) {
             draggingOffsetY = 0f
@@ -5565,7 +6010,7 @@ private fun ActiveItemsPage(
         while (draggingEntryId != null && autoReorderDirection != 0) {
             delay(DragAutoReorderDelayMillis)
             val entry = memo.entries.firstOrNull { it.id == draggingEntryId } ?: break
-            val group = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
+            val group = reorderGroup(entry)
             val index = group.indexOf(entry)
             val direction = autoReorderDirection
             val neighbor = group.getOrNull(index + direction)
@@ -5583,7 +6028,7 @@ private fun ActiveItemsPage(
                     scope.launch { listState.scrollBy(neighborHeight) }
                     keepDraggedEntryVisibleAfterLayout(entry, accumulateBottomGap = false)
                 }
-                val updatedGroup = memo.entries.filter { it.name.isNotBlank() && it.checked == entry.checked }
+                val updatedGroup = reorderGroup(entry)
                 val updatedIndex = updatedGroup.indexOf(entry)
                 autoReorderDirection = if (updatedGroup.getOrNull(updatedIndex + direction) != null) {
                     direction
@@ -5615,7 +6060,7 @@ private fun ActiveItemsPage(
         if (deleteSwipeEntryId == entry.id && deleteSwipeOffsetX >= deleteSwipeThresholdPx) {
             memo.entries.remove(entry)
             memo.deletedEntries.add(entry.copy(checked = false))
-            ensureDisplayBlankEntry(memo)
+            ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
             onChanged()
         }
         deleteSwipeEntryId = null
@@ -5626,6 +6071,13 @@ private fun ActiveItemsPage(
 
     fun markDone(entry: ShoppingEntry) {
         if (entry.name.isBlank()) return
+        if (keepCompletedItemsInPlace) {
+            entry.checked = true
+            onSelect(null)
+            ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
+            onChanged()
+            return
+        }
         memo.entries.remove(entry)
         entry.checked = true
         memo.entries.add(entry)
@@ -5635,6 +6087,12 @@ private fun ActiveItemsPage(
     }
 
     fun restoreDone(entry: ShoppingEntry) {
+        if (keepCompletedItemsInPlace) {
+            entry.checked = false
+            ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
+            onChanged()
+            return
+        }
         memo.entries.remove(entry)
         entry.checked = false
         val insertIndex = memo.entries.indexOfFirst { it.name.isBlank() }.let { if (it >= 0) it else memo.entries.size }
@@ -5670,6 +6128,7 @@ private fun ActiveItemsPage(
                             focusManager.clearFocus(force = true)
                             onSelect(null)
                             onFocusedItemConsumed()
+                            onEditingDismissed()
                             if (removeUnusedBlankEntry()) {
                                 onChanged()
                             }
@@ -5684,10 +6143,20 @@ private fun ActiveItemsPage(
         item(key = ListTopAnchorKey) {
             Spacer(Modifier.height(ListTopAnchorHeight))
         }
-        itemsIndexed(memo.entries.filter { !it.checked }, key = { _, entry -> entry.id }) { index, entry ->
+        val displayEntries = activeEntriesForDisplay()
+        itemsIndexed(displayEntries, key = { _, entry -> detailEntryRowKey(entry) }) { index, entry ->
+            val transientHighlighted = (recentlyMovedEntryIds.contains(entry.id) || recentlyRestoredEntryIds.contains(entry.id)) &&
+                selectedEntryId != entry.id &&
+                highlightedEntryId != entry.id
+            val displayNumber = if (entry.name.isNotBlank()) {
+                displayEntries.take(index + 1).count { it.name.isNotBlank() }
+            } else {
+                null
+            }
+            val actionLabel = if (keepCompletedItemsInPlace && entry.checked) "戻す" else "完了"
             ShoppingEntryRow(
                 entry = entry,
-                displayNumber = if (entry.name.isNotBlank()) index + 1 else null,
+                displayNumber = displayNumber,
                 selected = selectedEntryId == entry.id,
                 shouldRequestFocus = focusedItemRequestId == entry.id,
                 cursorRange = entryCursorRanges[entry.id],
@@ -5697,7 +6166,8 @@ private fun ActiveItemsPage(
                 isDeleteSwiping = deleteSwipeEntryId == entry.id,
                 deleteSwipeOffsetX = if (deleteSwipeEntryId == entry.id) deleteSwipeOffsetX else 0f,
                 editTapSuppressionSerial = editTapSuppressionSerial,
-                recentlyMoved = recentlyMovedEntryIds.contains(entry.id),
+                recentlyMoved = transientHighlighted,
+                actionLabel = actionLabel,
                 modifier = if (draggingEntryId == entry.id) {
                     Modifier.zIndex(1f)
                 } else if (deleteSwipeEntryId == entry.id) {
@@ -5707,10 +6177,13 @@ private fun ActiveItemsPage(
                 },
                 onSelect = { selectEntry(entry) },
                 onPressStarted = {
+                    onClearTransientHighlight(entry.id)
                     onSelect(null)
                     onFocusedItemConsumed()
+                    onEditingDismissed()
                 },
                 onEditRequested = {
+                    onClearTransientHighlight(entry.id)
                     selectEntry(entry)
                     onRequestFocus(entry.id)
                 },
@@ -5718,6 +6191,7 @@ private fun ActiveItemsPage(
                 onFocusConsumed = onFocusedItemConsumed,
                 onCursorChanged = { range -> onEntryCursorChanged(entry.id, range) },
                 onFocused = {
+                    onClearTransientHighlight(entry.id)
                     onSelect(entry.id)
                     if (entry.name.isNotBlank()) scrollAnchor = ScrollAnchor.Item
                     onEntryFocused(entry.id)
@@ -5726,21 +6200,42 @@ private fun ActiveItemsPage(
                     onEntryFocusCleared(entry.id)
                 },
                 onNameChanged = {
+                    onClearTransientHighlight(entry.id)
                     entry.name = it
-                    if (it.isBlank() && selectedEntryId == entry.id && memo.entries.any { other -> other.id != entry.id && other.name.isNotBlank() && !other.checked }) {
+                    if (
+                        it.isBlank() &&
+                        selectedEntryId == entry.id &&
+                        memo.entries.any {
+                            other -> other.id != entry.id &&
+                                other.name.isNotBlank() &&
+                                (keepCompletedItemsInPlace || !other.checked)
+                        }
+                    ) {
                         memo.entries.removeAll { other -> other.id != entry.id && other.name.isBlank() }
                     } else {
-                        ensureDisplayBlankEntry(memo)
+                        ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
                     }
                     onChanged()
                 },
-                onComplete = { markDone(entry) },
+                onComplete = {
+                    onClearTransientHighlight(entry.id)
+                    if (keepCompletedItemsInPlace && entry.checked) {
+                        restoreDone(entry)
+                    } else {
+                        markDone(entry)
+                    }
+                },
                 onDelete = {
+                    onClearTransientHighlight(entry.id)
                     memo.entries.remove(entry)
                     memo.deletedEntries.add(entry.copy(checked = false))
+                    ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
                     onChanged()
                 },
-                onReorderStart = { startReorder(entry) },
+                onReorderStart = {
+                    onClearTransientHighlight(entry.id)
+                    startReorder(entry)
+                },
                 onReorderDrag = { deltaY -> dragReorder(entry, deltaY) },
                 onReorderEnd = { endReorder() },
                 onDeleteSwipeStart = { startDeleteSwipe(entry) },
@@ -5755,7 +6250,7 @@ private fun ActiveItemsPage(
             AddListItemButton(
                 highlighted = highlightAddListItem,
                 onClick = {
-                    val entry = requestBlankEntry(memo)
+                    val entry = requestBlankEntry(memo, keepCompletedItemsInPlace)
                     scrollAnchor = ScrollAnchor.AddButton
                     onSelect(entry.id)
                     onRequestFocus(entry.id)
@@ -5763,7 +6258,11 @@ private fun ActiveItemsPage(
                 }
             )
         }
-        val doneEntries = memo.entries.filter { it.checked && it.name.isNotBlank() }
+        val doneEntries = if (keepCompletedItemsInPlace) {
+            emptyList()
+        } else {
+            memo.entries.filter { it.checked && it.name.isNotBlank() }
+        }
         if (doneEntries.isNotEmpty()) {
             item {
                 Text(
@@ -5777,20 +6276,27 @@ private fun ActiveItemsPage(
                 )
             }
             items(doneEntries, key = { "done-${it.id}" }) { entry ->
+                val transientHighlighted = recentlyMovedEntryIds.contains(entry.id) || recentlyRestoredEntryIds.contains(entry.id)
                 DoneEntryRow(
                     entry = entry,
                     isDragging = draggingEntryId == entry.id,
                     dragOffsetY = if (draggingEntryId == entry.id) draggingOffsetY else 0f,
                     isDeleteSwiping = deleteSwipeEntryId == entry.id,
                     deleteSwipeOffsetX = if (deleteSwipeEntryId == entry.id) deleteSwipeOffsetX else 0f,
-                    recentlyMoved = recentlyMovedEntryIds.contains(entry.id),
+                    recentlyMoved = transientHighlighted,
                     modifier = if (draggingEntryId == entry.id || deleteSwipeEntryId == entry.id) {
                         Modifier.zIndex(1f)
                     } else {
                         Modifier.animateItem().zIndex(0f)
                     },
-                    onRestore = { restoreDone(entry) },
-                    onDeleteSwipeStart = { startDeleteSwipe(entry) },
+                    onRestore = {
+                        onClearTransientHighlight(entry.id)
+                        restoreDone(entry)
+                    },
+                    onDeleteSwipeStart = {
+                        onClearTransientHighlight(entry.id)
+                        startDeleteSwipe(entry)
+                    },
                     onDeleteSwipeDrag = { deltaX, deltaY ->
                         dragDeleteSwipe(entry, deltaX)
                         dragReorder(entry, deltaY)
@@ -5839,6 +6345,8 @@ private fun swipeToTrashModifier(
                 }
                 return@awaitEachGesture
             } else if (preLongPressResult == false) {
+                focusManager.clearFocus(force = true)
+                onPressStarted()
                 return@awaitEachGesture
             }
 
@@ -5958,6 +6466,7 @@ private fun ShoppingEntryRow(
     deleteSwipeOffsetX: Float,
     editTapSuppressionSerial: Int,
     recentlyMoved: Boolean,
+    actionLabel: String = "完了",
     modifier: Modifier = Modifier,
     onSelect: () -> Unit,
     onPressStarted: () -> Unit,
@@ -5979,7 +6488,6 @@ private fun ShoppingEntryRow(
 ) {
     val focusRequester = remember { FocusRequester() }
     val sizes = LocalAppFontSizes.current
-    val canDrag = entry.name.isNotBlank()
     var fieldValue by remember(entry.id) { mutableStateOf(TextFieldValue(entry.name)) }
     var textLayoutResult by remember(entry.id) { mutableStateOf<TextLayoutResult?>(null) }
     var pendingTapPosition by remember(entry.id) { mutableStateOf<Offset?>(null) }
@@ -5989,11 +6497,10 @@ private fun ShoppingEntryRow(
         selected -> focusedEntryBackground()
         else -> entryColorMarkBackground(entry.colorMark)
     }
-    val moveSparkleAlpha = rememberSparkleAlpha(recentlyMoved)
     val microphoneSparkleAlpha = rememberSparkleAlpha(microphoneHighlighted)
     val rowSwipeModifier = swipeToTrashModifier(
         key = entry.id,
-        enabled = canDrag,
+        enabled = true,
         editTapSuppressionSerial = editTapSuppressionSerial,
         onPressStarted = onPressStarted,
         onTap = {
@@ -6020,8 +6527,9 @@ private fun ShoppingEntryRow(
             val tapOffset = pendingTapPosition
                 ?.let { textLayoutResult?.getOffsetForPosition(it) }
                 ?.coerceIn(0, fieldValue.text.length)
-                ?: fieldValue.selection.start.coerceIn(0, fieldValue.text.length)
-            val selection = cursorRange?.let { coerceTextRange(it, fieldValue.text.length) } ?: TextRange(tapOffset)
+            val selection = tapOffset?.let { TextRange(it) }
+                ?: cursorRange?.let { coerceTextRange(it, fieldValue.text.length) }
+                ?: TextRange(fieldValue.selection.start.coerceIn(0, fieldValue.text.length))
             fieldValue = fieldValue.copy(selection = selection)
             onCursorChanged(selection)
             if (!textFocused) {
@@ -6048,7 +6556,7 @@ private fun ShoppingEntryRow(
                         .goldAddItemBackground(true)
                         .sparkleOverlay(microphoneSparkleAlpha * 0.45f)
                 } else {
-                    Modifier.recentMoveBackground(recentlyMoved, rowBackground, moveSparkleAlpha)
+                    Modifier.recentMoveBackground(recentlyMoved, rowBackground)
                 }
             )
             .padding(horizontal = 10.dp, vertical = 6.dp)
@@ -6103,7 +6611,7 @@ private fun ShoppingEntryRow(
                 onClick = onComplete
             ) {
                 Text(
-                    text = if (isDeleteSwiping) "→ 🗑" else "完了",
+                    text = if (isDeleteSwiping) "→ 🗑" else actionLabel,
                     color = if (isDeleteSwiping) Color(0xFFD32F2F) else if (entry.name.isBlank()) Color(0xFFBBBBBB) else Color(0xFF1976D2),
                     fontSize = sizes.listAction,
                     fontWeight = if (isDeleteSwiping) FontWeight.Bold else FontWeight.Normal
@@ -6134,13 +6642,13 @@ private fun coerceTextRange(range: TextRange, length: Int): TextRange {
     )
 }
 
-private fun Modifier.recentMoveBackground(active: Boolean, normalColor: Color, sparkleAlpha: Float): Modifier {
+private fun Modifier.recentMoveBackground(active: Boolean, normalColor: Color): Modifier {
     return if (active) {
         background(
             Brush.horizontalGradient(
-                colors = GoldHighlightColors
+                colors = PurpleHighlightColors
             )
-        ).sparkleOverlay(sparkleAlpha)
+        )
     } else {
         background(normalColor)
     }
@@ -6212,7 +6720,7 @@ private fun DoneEntryRow(
                 scaleY = if (isDragging || isDeleteSwiping) 1.02f else 1f
                 shadowElevation = if (isDragging || isDeleteSwiping) 16f else 0f
             }
-            .background(CompletedEntryBackground)
+            .recentMoveBackground(recentlyMoved, CompletedEntryBackground)
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -6513,12 +7021,14 @@ private fun JumpFab(
 ) {
     FloatingActionButton(
         onClick = onClick,
-        containerColor = Color(0xFF1E88E5),
-        modifier = Modifier.size(86.dp * sizeScale)
+        containerColor = Color.White,
+        modifier = Modifier
+            .size(86.dp * sizeScale)
+            .border(BorderStroke(1.dp, Color(0xFF90CAF9)), RoundedCornerShape(18.dp))
     ) {
         Text(
             text = label,
-            color = Color.White,
+            color = Color(0xFF1976D2),
             fontSize = (42 * sizeScale).sp,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
@@ -6530,15 +7040,21 @@ private fun JumpFab(
 private fun FavoritesScreen(
     memos: List<ShoppingMemo>,
     oneHandModeEnabled: Boolean,
+    leftHandModeEnabled: Boolean,
     microphoneEnabled: Boolean,
     microphoneSessionActive: Boolean,
     onMicrophoneSessionActiveChange: (Boolean) -> Unit,
+    keepCompletedItemsInPlace: Boolean,
     onHome: () -> Unit,
     onChanged: () -> Unit
 ) {
     var selectedTab by remember { mutableStateOf(0) }
     var listAtTop by remember { mutableStateOf(true) }
     var itemDragActive by remember { mutableStateOf(false) }
+    val recentlyRestoredEntryIds = remember { mutableStateListOf<String>() }
+    var restoredMemoId by remember { mutableStateOf<String?>(null) }
+    var restoredEntryId by remember { mutableStateOf<String?>(null) }
+    var restoredScrollSerial by remember { mutableStateOf(0) }
     val density = LocalDensity.current
     val swipeThresholdPx = with(density) { 72.dp.toPx() }
 
@@ -6590,14 +7106,21 @@ private fun FavoritesScreen(
                     when (selectedTab) {
                         0 -> FavoriteItemsOverview(
                             memos = memos,
+                            leftHandModeEnabled = leftHandModeEnabled,
                             microphoneEnabled = microphoneEnabled,
                             microphoneSessionActive = microphoneSessionActive,
                             onMicrophoneSessionActiveChange = onMicrophoneSessionActiveChange,
+                            keepCompletedItemsInPlace = keepCompletedItemsInPlace,
                             voiceScrollDirection = 0,
                             voiceScrollSerial = 0,
                             onVoiceScrollFinished = { },
                             onItemDragActiveChange = { itemDragActive = it },
                             onListAtTopChanged = { listAtTop = it },
+                            recentlyRestoredEntryIds = recentlyRestoredEntryIds.toSet(),
+                            restoredMemoId = restoredMemoId,
+                            restoredEntryId = restoredEntryId,
+                            restoredScrollSerial = restoredScrollSerial,
+                            onClearRestoredEntryHighlight = { recentlyRestoredEntryIds.remove(it) },
                             onChanged = onChanged
                         )
                         else -> FavoriteTrashOverview(
@@ -6606,6 +7129,15 @@ private fun FavoritesScreen(
                             voiceScrollSerial = 0,
                             onVoiceScrollFinished = { },
                             onListAtTopChanged = { listAtTop = it },
+                            keepCompletedItemsInPlace = keepCompletedItemsInPlace,
+                            onEntryRestored = { memo, entry ->
+                                recentlyRestoredEntryIds.remove(entry.id)
+                                recentlyRestoredEntryIds.add(entry.id)
+                                restoredMemoId = memo.id
+                                restoredEntryId = entry.id
+                                restoredScrollSerial++
+                                selectedTab = 0
+                            },
                             onChanged = onChanged
                         )
                     }
@@ -6667,14 +7199,21 @@ private fun FavoriteScreenTabs(
 @Composable
 private fun FavoriteItemsOverview(
     memos: List<ShoppingMemo>,
+    leftHandModeEnabled: Boolean,
     microphoneEnabled: Boolean,
     microphoneSessionActive: Boolean,
     onMicrophoneSessionActiveChange: (Boolean) -> Unit,
+    keepCompletedItemsInPlace: Boolean,
     voiceScrollDirection: Int,
     voiceScrollSerial: Int,
     onVoiceScrollFinished: () -> Unit,
     onItemDragActiveChange: (Boolean) -> Unit,
     onListAtTopChanged: (Boolean) -> Unit,
+    recentlyRestoredEntryIds: Set<String>,
+    restoredMemoId: String?,
+    restoredEntryId: String?,
+    restoredScrollSerial: Int,
+    onClearRestoredEntryHighlight: (String) -> Unit,
     onChanged: () -> Unit
 ) {
     val context = LocalContext.current
@@ -6709,6 +7248,9 @@ private fun FavoriteItemsOverview(
     var addingMemoId by remember { mutableStateOf<String?>(null) }
     var addingEntryId by remember { mutableStateOf<String?>(null) }
     var addingFocusSerial by remember { mutableStateOf(0) }
+    var voiceAddedMemoId by remember { mutableStateOf<String?>(null) }
+    var voiceAddedEntryId by remember { mutableStateOf<String?>(null) }
+    var voiceAddedScrollSerial by remember { mutableStateOf(0) }
     var listBounds by remember { mutableStateOf<Rect?>(null) }
     val listAtTop = !listState.canScrollBackward
     val imeBottom = with(density) { WindowInsets.ime.getBottom(this).toDp() }
@@ -6719,15 +7261,6 @@ private fun FavoriteItemsOverview(
         22.dp
     }
     val microphoneAddHighlightActive = microphoneEnabled && microphoneSessionActive
-    val highlightedFavoriteAddMemoId = if (microphoneAddHighlightActive) {
-        listBounds?.let { bounds ->
-            val centerY = bounds.center.y
-            addRowBounds.minByOrNull { (_, rect) -> kotlin.math.abs(rect.center.y - centerY) }?.key
-        }
-    } else {
-        null
-    }
-    val latestHighlightedFavoriteAddMemoId by rememberUpdatedState(highlightedFavoriteAddMemoId)
 
     LaunchedEffect(listAtTop) {
         onListAtTopChanged(listAtTop)
@@ -6746,8 +7279,25 @@ private fun FavoriteItemsOverview(
         return active
     }
 
+    fun favoriteEntriesForDisplay(memo: ShoppingMemo): List<ShoppingEntry> {
+        return if (keepCompletedItemsInPlace) {
+            memo.entries.toMutableList().also { entries ->
+                val editingEntry = if (memo.id == addingMemoId) {
+                    memo.entries.firstOrNull { it.id == addingEntryId }
+                } else {
+                    null
+                }
+                if (editingEntry != null && editingEntry.name.isBlank() && entries.none { it.id == editingEntry.id }) {
+                    entries.add(editingEntry)
+                }
+            }
+        } else {
+            favoriteActiveEntriesForDisplay(memo)
+        }
+    }
+
     fun beginFavoriteAdd(memo: ShoppingMemo) {
-        val entry = requestBlankEntry(memo)
+        val entry = requestBlankEntry(memo, keepCompletedItemsInPlace)
         addingMemoId = memo.id
         addingEntryId = entry.id
         addingFocusSerial++
@@ -6757,26 +7307,71 @@ private fun FavoriteItemsOverview(
     fun updateFavoriteEntryName(memo: ShoppingMemo, entry: ShoppingEntry, name: String) {
         entry.name = name
         if (name.isNotBlank()) {
-            ensureDisplayBlankEntry(memo)
+            ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
         }
         onChanged()
     }
 
+    fun visibleFavoriteAddMemoId(): String? {
+        val bounds = listBounds ?: return null
+        val centerY = bounds.center.y
+        return addRowBounds
+            .filter { (_, rect) -> rect.bottom > bounds.top && rect.top < bounds.bottom }
+            .minByOrNull { (_, rect) -> kotlin.math.abs(rect.center.y - centerY) }
+            ?.key
+    }
+
+    fun favoriteTopVisibleMemoId(): String? {
+        val firstVisibleIndex = listState.firstVisibleItemIndex
+        var sectionStartIndex = 0
+        memos.forEach { memo ->
+            val active = favoriteEntriesForDisplay(memo)
+            val done = favoriteVisibleGroup(memo, checked = true)
+            val bodyCount = if (active.isEmpty() && (keepCompletedItemsInPlace || done.isEmpty())) {
+                1
+            } else {
+                active.size + if (!keepCompletedItemsInPlace && done.isNotEmpty()) 1 + done.size else 0
+            }
+            val nextSectionStartIndex = sectionStartIndex + 1 + bodyCount + 1 + 1
+            if (firstVisibleIndex < nextSectionStartIndex) {
+                return memo.id
+            }
+            sectionStartIndex = nextSectionStartIndex
+        }
+        return memos.lastOrNull()?.id
+    }
+
+    val highlightedFavoriteAddMemoId = if (microphoneAddHighlightActive) {
+        visibleFavoriteAddMemoId()
+    } else {
+        null
+    }
+    val favoriteVoiceTargetMemoId = if (microphoneAddHighlightActive) {
+        highlightedFavoriteAddMemoId ?: favoriteTopVisibleMemoId()
+    } else {
+        null
+    }
+    val latestFavoriteVoiceTargetMemoId by rememberUpdatedState(favoriteVoiceTargetMemoId)
+
     fun handleFavoriteVoiceText(text: String) {
         val cleaned = text.trim()
         if (cleaned.isBlank()) return
-        val targetMemoId = latestHighlightedFavoriteAddMemoId ?: addingMemoId
+        val targetMemoId = latestFavoriteVoiceTargetMemoId ?: addingMemoId
         val memo = memos.firstOrNull { it.id == targetMemoId } ?: memos.firstOrNull() ?: return
         val entry = memo.entries.firstOrNull {
-            it.id == addingEntryId && it.name.isBlank() && !it.checked
+            it.id == addingEntryId && it.name.isBlank() && (keepCompletedItemsInPlace || !it.checked)
         } ?: memo.entries.firstOrNull {
-            it.name.isBlank() && !it.checked
-        } ?: requestBlankEntry(memo)
+            it.name.isBlank() && (keepCompletedItemsInPlace || !it.checked)
+        } ?: requestBlankEntry(memo, keepCompletedItemsInPlace)
+        onClearRestoredEntryHighlight(entry.id)
         entry.checked = false
         entry.name = cleaned
-        ensureDisplayBlankEntry(memo)
+        ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
         addingMemoId = memo.id
         addingEntryId = null
+        voiceAddedMemoId = memo.id
+        voiceAddedEntryId = entry.id
+        voiceAddedScrollSerial++
         focusManager.clearFocus()
         onChanged()
     }
@@ -6846,18 +7441,18 @@ private fun FavoriteItemsOverview(
     }
 
     fun canDragWithinCurrentFavoriteGroup(memo: ShoppingMemo, entry: ShoppingEntry, direction: Int): Boolean {
-        val group = favoriteVisibleGroup(memo, entry.checked)
+        val group = displayEntryGroup(memo, entry, keepCompletedItemsInPlace)
         val index = group.indexOfFirst { it.id == entry.id }
         return index >= 0 && group.getOrNull(index + direction) != null
     }
 
     fun favoriteSectionItemCount(memo: ShoppingMemo): Int {
-        val active = favoriteActiveEntriesForDisplay(memo)
+        val active = favoriteEntriesForDisplay(memo)
         val done = favoriteVisibleGroup(memo, checked = true)
-        val bodyCount = if (active.isEmpty() && done.isEmpty()) {
+        val bodyCount = if (active.isEmpty() && (keepCompletedItemsInPlace || done.isEmpty())) {
             1
         } else {
-            active.size + if (done.isNotEmpty()) 1 + done.size else 0
+            active.size + if (!keepCompletedItemsInPlace && done.isNotEmpty()) 1 + done.size else 0
         }
         return 1 + bodyCount + 1 + 1
     }
@@ -6885,19 +7480,24 @@ private fun FavoriteItemsOverview(
 
     fun requestFavoriteSectionJump(direction: Int) {
         if (memos.size < 2) return
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
         val targetMemoIndex = (currentFavoriteSectionIndex() + direction).coerceIn(0, memos.lastIndex)
         scope.launch {
-            listState.animateScrollToItem(index = favoriteHeaderListIndex(targetMemoIndex))
+            listState.scrollToItem(index = favoriteHeaderListIndex(targetMemoIndex))
         }
     }
 
     fun favoriteListIndexForEntry(memo: ShoppingMemo, entry: ShoppingEntry): Int {
         var index = 0
         memos.forEach { currentMemo ->
-            val active = favoriteActiveEntriesForDisplay(currentMemo)
+            val active = favoriteEntriesForDisplay(currentMemo)
             val done = favoriteVisibleGroup(currentMemo, checked = true)
             if (currentMemo.id == memo.id) {
-                return if (entry.checked) {
+                return if (keepCompletedItemsInPlace) {
+                    val entryIndex = active.indexOfFirst { it.id == entry.id }
+                    if (entryIndex < 0) -1 else index + 1 + entryIndex
+                } else if (entry.checked) {
                     val doneIndex = done.indexOfFirst { it.id == entry.id }
                     if (doneIndex < 0) -1 else index + 1 + active.size + 1 + 1 + doneIndex
                 } else {
@@ -6908,6 +7508,32 @@ private fun FavoriteItemsOverview(
             index += favoriteSectionItemCount(currentMemo)
         }
         return -1
+    }
+
+    LaunchedEffect(restoredScrollSerial, restoredMemoId, restoredEntryId, memos.size) {
+        if (restoredScrollSerial <= 0) return@LaunchedEffect
+        val targetMemo = memos.firstOrNull { it.id == restoredMemoId } ?: return@LaunchedEffect
+        val targetEntry = targetMemo.entries.firstOrNull { it.id == restoredEntryId && !it.checked } ?: return@LaunchedEffect
+        withFrameNanos { }
+        val targetIndex = favoriteListIndexForEntry(targetMemo, targetEntry)
+        if (targetIndex >= 0) {
+            val viewportHeight = listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
+            val scrollOffset = -((viewportHeight - bottomPaddingPx - fallbackRowHeightPx.roundToInt()).coerceAtLeast(0))
+            listState.animateScrollToItem(targetIndex, scrollOffset = scrollOffset)
+        }
+    }
+
+    LaunchedEffect(voiceAddedScrollSerial, voiceAddedMemoId, voiceAddedEntryId, memos.size) {
+        if (voiceAddedScrollSerial <= 0) return@LaunchedEffect
+        val targetMemo = memos.firstOrNull { it.id == voiceAddedMemoId } ?: return@LaunchedEffect
+        val targetEntry = targetMemo.entries.firstOrNull { it.id == voiceAddedEntryId } ?: return@LaunchedEffect
+        withFrameNanos { }
+        val targetIndex = favoriteListIndexForEntry(targetMemo, targetEntry)
+        if (targetIndex >= 0) {
+            val viewportHeight = listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
+            val scrollOffset = -((viewportHeight - bottomPaddingPx - fallbackRowHeightPx.roundToInt()).coerceAtLeast(0))
+            listState.animateScrollToItem(targetIndex, scrollOffset = scrollOffset)
+        }
     }
 
     fun keepFavoriteDraggedEntryVisible(memo: ShoppingMemo, entry: ShoppingEntry, accumulateBottomGap: Boolean = true) {
@@ -7048,7 +7674,7 @@ private fun FavoriteItemsOverview(
             ) {
                 return@LaunchedEffect
             }
-            val group = favoriteVisibleGroup(memo, entry.checked)
+            val group = displayEntryGroup(memo, entry, keepCompletedItemsInPlace)
             val groupIndex = group.indexOfFirst { it.id == entry.id }
             autoReorderDirection = if (dragDirectionY < 0 && groupIndex > 0) -1 else 0
             if (expectedSerial == layoutCorrectionSerial) {
@@ -7179,7 +7805,7 @@ private fun FavoriteItemsOverview(
         var movedDuringDrag = false
         var restoreFirstVisibleAfterMove = false
         while (true) {
-            val group = favoriteVisibleGroup(memo, entry.checked)
+            val group = displayEntryGroup(memo, entry, keepCompletedItemsInPlace)
             val currentIndex = group.indexOfFirst { it.id == entry.id }
             if (currentIndex < 0) return
             when {
@@ -7188,7 +7814,7 @@ private fun FavoriteItemsOverview(
                     val nextHeight = favoriteRowHeightPx(memo, next)
                     if (dragOffsetY <= nextHeight / 2f) break
                     val entryListIndexBeforeMove = favoriteListIndexForEntry(memo, entry)
-                    if (!moveFavoriteEntry(memo, entry, 1)) break
+                    if (!moveFavoriteEntry(memo, entry, 1, keepCompletedItemsInPlace)) break
                     movedDuringDrag = true
                     if (entryListIndexBeforeMove == firstVisibleIndexAtDragStart) {
                         restoreFirstVisibleAfterMove = true
@@ -7203,7 +7829,7 @@ private fun FavoriteItemsOverview(
                     val previous = group.getOrNull(currentIndex - 1) ?: break
                     val previousHeight = favoriteRowHeightPx(memo, previous)
                     if (-dragOffsetY <= previousHeight / 2f) break
-                    if (!moveFavoriteEntry(memo, entry, -1)) break
+                    if (!moveFavoriteEntry(memo, entry, -1, keepCompletedItemsInPlace)) break
                     movedDuringDrag = true
                     dragOffsetY += previousHeight
                     val newListIndex = favoriteListIndexForEntry(memo, entry)
@@ -7214,7 +7840,7 @@ private fun FavoriteItemsOverview(
                 else -> break
             }
         }
-        val group = favoriteVisibleGroup(memo, entry.checked)
+        val group = displayEntryGroup(memo, entry, keepCompletedItemsInPlace)
         val currentIndex = group.indexOfFirst { it.id == entry.id }
         if (currentIndex == 0 && dragOffsetY < 0f) {
             dragOffsetY = 0f
@@ -7245,7 +7871,7 @@ private fun FavoriteItemsOverview(
 
     fun endDrag(memo: ShoppingMemo, entry: ShoppingEntry) {
         if (draggingMemoId == memo.id && draggingEntryId == entry.id && dragOffsetX >= deleteSwipeThresholdPx) {
-            moveFavoriteEntryToTrash(memo, entry)
+            moveFavoriteEntryToTrash(memo, entry, keepCompletedItemsInPlace)
             onChanged()
         }
         draggingMemoId = null
@@ -7265,7 +7891,7 @@ private fun FavoriteItemsOverview(
             delay(DragAutoReorderDelayMillis)
             val memo = memos.firstOrNull { it.id == draggingMemoId } ?: break
             val entry = memo.entries.firstOrNull { it.id == draggingEntryId && it.checked == draggingChecked } ?: break
-            val group = favoriteVisibleGroup(memo, entry.checked)
+            val group = displayEntryGroup(memo, entry, keepCompletedItemsInPlace)
             val index = group.indexOfFirst { it.id == entry.id }
             val direction = autoReorderDirection
             val neighbor = group.getOrNull(index + direction)
@@ -7274,7 +7900,7 @@ private fun FavoriteItemsOverview(
                 break
             }
             val neighborHeight = favoriteRowHeightPx(memo, neighbor)
-            if (moveFavoriteEntry(memo, entry, direction)) {
+            if (moveFavoriteEntry(memo, entry, direction, keepCompletedItemsInPlace)) {
                 onChanged()
                 if (direction < 0) {
                     pinFavoriteDraggedEntryToTopAfterLayout(memo, entry)
@@ -7284,7 +7910,7 @@ private fun FavoriteItemsOverview(
                     scope.launch { listState.scrollBy(neighborHeight) }
                     keepFavoriteDraggedEntryVisibleAfterLayout(entry = entry, memo = memo, accumulateBottomGap = false)
                 }
-                val updatedGroup = favoriteVisibleGroup(memo, entry.checked)
+                val updatedGroup = displayEntryGroup(memo, entry, keepCompletedItemsInPlace)
                 val updatedIndex = updatedGroup.indexOfFirst { it.id == entry.id }
                 autoReorderDirection = if (updatedGroup.getOrNull(updatedIndex + direction) != null) {
                     direction
@@ -7307,11 +7933,16 @@ private fun FavoriteItemsOverview(
             contentPadding = PaddingValues(bottom = DetailListExtraBottom)
         ) {
             memos.forEach { memo ->
-                val activeEntries = favoriteActiveEntriesForDisplay(memo)
+                val activeEntries = favoriteEntriesForDisplay(memo)
                 val visibleActiveCount = favoriteVisibleGroup(memo, checked = false).size
-                val doneEntries = favoriteVisibleGroup(memo, checked = true)
+                val headerDoneCount = favoriteVisibleGroup(memo, checked = true).size
+                val doneEntries = if (keepCompletedItemsInPlace) {
+                    emptyList()
+                } else {
+                    favoriteVisibleGroup(memo, checked = true)
+                }
                 item(key = favoriteMemoHeaderKey(memo.id)) {
-                    FavoriteMemoItemsHeader(memo = memo, activeCount = visibleActiveCount, doneCount = doneEntries.size)
+                    FavoriteMemoItemsHeader(memo = memo, activeCount = visibleActiveCount, doneCount = headerDoneCount)
                 }
                 if (activeEntries.isEmpty() && doneEntries.isEmpty()) {
                     item(key = favoriteEmptyRowKey(memo.id)) {
@@ -7340,7 +7971,7 @@ private fun FavoriteItemsOverview(
                                         entry.checked = true
                                         addingMemoId = null
                                         addingEntryId = null
-                                        ensureDisplayBlankEntry(memo)
+                                        ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
                                         onChanged()
                                     }
                                 }
@@ -7354,16 +7985,23 @@ private fun FavoriteItemsOverview(
                                 isDragging = draggingMemoId == memo.id && draggingEntryId == entry.id,
                                 dragOffsetX = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetX else 0f,
                                 dragOffsetY = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetY else 0f,
+                                recentlyRestored = recentlyRestoredEntryIds.contains(entry.id),
+                                actionLabel = if (keepCompletedItemsInPlace && entry.checked) "戻す" else "完了",
                                 onComplete = {
-                                    entry.checked = true
-                                    ensureDisplayBlankEntry(memo)
+                                    onClearRestoredEntryHighlight(entry.id)
+                                    entry.checked = if (keepCompletedItemsInPlace && entry.checked) false else true
+                                    ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
                                     onChanged()
                                 },
                                 onTrash = {
-                                    moveFavoriteEntryToTrash(memo, entry)
+                                    onClearRestoredEntryHighlight(entry.id)
+                                    moveFavoriteEntryToTrash(memo, entry, keepCompletedItemsInPlace)
                                     onChanged()
                                 },
-                                onDragStart = { startDrag(memo, entry) },
+                                onDragStart = {
+                                    onClearRestoredEntryHighlight(entry.id)
+                                    startDrag(memo, entry)
+                                },
                                 onDrag = { deltaX, deltaY -> drag(memo, entry, deltaX, deltaY) },
                                 onDragEnd = { endDrag(memo, entry) }
                             )
@@ -7401,7 +8039,7 @@ private fun FavoriteItemsOverview(
                                 onChanged()
                             },
                             onTrash = {
-                                moveFavoriteEntryToTrash(memo, entry)
+                                moveFavoriteEntryToTrash(memo, entry, keepCompletedItemsInPlace)
                                 onChanged()
                             },
                             onDragStart = { startDrag(memo, entry) },
@@ -7418,18 +8056,23 @@ private fun FavoriteItemsOverview(
 
         val showFavoriteJumpButtons = memos.size >= 2
         if ((microphoneEnabled || showFavoriteJumpButtons) && draggingEntryId == null) {
+            val fabAlignment = if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd
             Row(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = fabBottomPadding),
+                    .align(fabAlignment)
+                    .padding(
+                        start = if (leftHandModeEnabled) 12.dp else 0.dp,
+                        end = if (leftHandModeEnabled) 0.dp else 12.dp,
+                        bottom = fabBottomPadding
+                    ),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
                 if (showFavoriteJumpButtons) {
                     JumpFab(
-                        label = "⇑",
+                        label = if (leftHandModeEnabled) "⇑" else "⇓",
                         sizeScale = HomeOperationScale,
-                        onClick = { requestFavoriteSectionJump(-1) }
+                        onClick = { requestFavoriteSectionJump(if (leftHandModeEnabled) -1 else 1) }
                     )
                 }
                 if (microphoneEnabled) {
@@ -7457,9 +8100,9 @@ private fun FavoriteItemsOverview(
                 }
                 if (showFavoriteJumpButtons) {
                     JumpFab(
-                        label = "⇓",
+                        label = if (leftHandModeEnabled) "⇓" else "⇑",
                         sizeScale = HomeOperationScale,
-                        onClick = { requestFavoriteSectionJump(1) }
+                        onClick = { requestFavoriteSectionJump(if (leftHandModeEnabled) 1 else -1) }
                     )
                 }
             }
@@ -7474,6 +8117,8 @@ private fun FavoriteTrashOverview(
     voiceScrollSerial: Int,
     onVoiceScrollFinished: () -> Unit,
     onListAtTopChanged: (Boolean) -> Unit,
+    keepCompletedItemsInPlace: Boolean,
+    onEntryRestored: (ShoppingMemo, ShoppingEntry) -> Unit,
     onChanged: () -> Unit
 ) {
     val density = LocalDensity.current
@@ -7545,16 +8190,8 @@ private fun FavoriteTrashOverview(
                 dragOffsetX = dragOffsetX,
                 onRestore = { entry ->
                     memo.deletedEntries.remove(entry)
-                    val restored = entry.copy(checked = false)
-                    val blankIndex = memo.entries.indexOfFirst { it.name.isBlank() }
-                    val doneIndex = memo.entries.indexOfFirst { it.checked }
-                    val insertIndex = when {
-                        blankIndex >= 0 -> blankIndex
-                        doneIndex >= 0 -> doneIndex
-                        else -> memo.entries.size
-                    }
-                    memo.entries.add(insertIndex, restored)
-                    ensureDisplayBlankEntry(memo)
+                    val restored = restoreEntryToActiveBottom(memo, entry, keepCompletedItemsInPlace)
+                    onEntryRestored(memo, restored)
                     onChanged()
                 },
                 onErase = { entry ->
@@ -7832,6 +8469,7 @@ private fun FavoriteMemoItemsSection(
                         isDragging = draggingMemoId == memo.id && draggingEntryId == entry.id,
                         dragOffsetX = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetX else 0f,
                         dragOffsetY = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetY else 0f,
+                        recentlyRestored = false,
                         onComplete = { onComplete(entry) },
                         onTrash = { onMoveToTrash(entry) },
                         onDragStart = { onDragStart(memo, entry) },
@@ -7956,7 +8594,7 @@ private fun FavoriteMemoIcon(memo: ShoppingMemo) {
             .padding(4.dp),
         contentAlignment = Alignment.Center
     ) {
-        ShoppingPatternImage(pattern = memo.imagePattern, modifier = Modifier.fillMaxSize())
+        MemoCardImage(memo = memo, modifier = Modifier.fillMaxSize())
     }
 }
 
@@ -7965,7 +8603,7 @@ private fun favoriteVisibleGroup(memo: ShoppingMemo, checked: Boolean): List<Sho
 }
 
 private fun favoriteEntryRowKey(memoId: String, entry: ShoppingEntry): String {
-    return "$memoId:${if (entry.checked) "done" else "active"}:${entry.id}"
+    return "$memoId:${entry.id}"
 }
 
 private fun favoriteMemoHeaderKey(memoId: String): String {
@@ -7988,15 +8626,24 @@ private fun favoriteSectionSpacerKey(memoId: String): String {
     return "$memoId:spacer"
 }
 
-private fun moveFavoriteEntry(memo: ShoppingMemo, entry: ShoppingEntry, direction: Int): Boolean {
-    return moveEntryWithinVisibleGroup(memo, entry, direction)
+private fun moveFavoriteEntry(
+    memo: ShoppingMemo,
+    entry: ShoppingEntry,
+    direction: Int,
+    keepCompletedItemsInPlace: Boolean = false
+): Boolean {
+    return moveEntryWithinVisibleGroup(memo, entry, direction, keepCompletedItemsInPlace)
 }
 
-private fun moveFavoriteEntryToTrash(memo: ShoppingMemo, entry: ShoppingEntry) {
+private fun moveFavoriteEntryToTrash(
+    memo: ShoppingMemo,
+    entry: ShoppingEntry,
+    keepCompletedItemsInPlace: Boolean = false
+) {
     if (entry.name.isBlank()) return
     memo.entries.remove(entry)
     memo.deletedEntries.add(entry.copy(checked = false))
-    ensureDisplayBlankEntry(memo)
+    ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
 }
 
 @Composable
@@ -8008,6 +8655,8 @@ private fun FavoriteActiveEntryRow(
     isDragging: Boolean,
     dragOffsetX: Float,
     dragOffsetY: Float,
+    recentlyRestored: Boolean,
+    actionLabel: String = "完了",
     onComplete: () -> Unit,
     onTrash: () -> Unit,
     onDragStart: () -> Unit,
@@ -8037,7 +8686,10 @@ private fun FavoriteActiveEntryRow(
                 shadowElevation = if (isDragging) 16f else 0f
             }
             .zIndex(if (isDragging) 1f else 0f)
-            .background(Color.White)
+            .recentMoveBackground(
+                active = recentlyRestored,
+                normalColor = if (entry.checked) CompletedEntryBackground else Color.White
+            )
             .onGloballyPositioned { rowBounds[rowKey] = it.boundsInWindow() }
             .then(swipeModifier)
             .padding(horizontal = 10.dp, vertical = 8.dp),
@@ -8046,9 +8698,11 @@ private fun FavoriteActiveEntryRow(
         NumberHandle(displayNumber = number)
         Text(
             text = entry.name,
-            color = Color.Black,
+            color = if (entry.checked) Color(0xFF777777) else Color.Black,
             fontSize = sizes.listText,
             lineHeight = sizes.listLineHeight,
+            fontWeight = if (entry.checked) FontWeight.Bold else FontWeight.Normal,
+            textDecoration = if (entry.checked) TextDecoration.LineThrough else TextDecoration.None,
             modifier = Modifier
                 .weight(1f)
                 .padding(vertical = 8.dp)
@@ -8063,7 +8717,7 @@ private fun FavoriteActiveEntryRow(
             )
         } else {
             TextButton(onClick = onComplete, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                Text("完了", color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
+                Text(actionLabel, color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -8212,6 +8866,8 @@ private fun SettingsScreen(
     onLeftHandModeChanged: (Boolean) -> Unit,
     largeFontEnabled: Boolean,
     onLargeFontChanged: (Boolean) -> Unit,
+    keepCompletedItemsInPlace: Boolean,
+    onKeepCompletedItemsInPlaceChanged: (Boolean) -> Unit,
     microphoneSettings: MicrophoneSettings,
     onMicrophoneSettingsChanged: (MicrophoneSettings) -> Unit,
     onResetOperationHelp: () -> Unit
@@ -8264,6 +8920,12 @@ private fun SettingsScreen(
                             largeFontEnabled = largeFontEnabled,
                             onLargeFontChanged = onLargeFontChanged
                         )
+                        SettingToggleRow(
+                            title = "取消しアイテムの位置を変えない",
+                            description = "完了したアイテムをその場に残し、取り消し線だけを付けます。",
+                            checked = keepCompletedItemsInPlace,
+                            onCheckedChange = onKeepCompletedItemsInPlaceChanged
+                        )
                     }
                 }
                 item {
@@ -8282,7 +8944,7 @@ private fun SettingsScreen(
                             }
                         )
                         SettingToggleRow(
-                            title = "一覧でマイクを有効にする",
+                            title = "一覧で自動でマイク起動する",
                             description = "一覧画面で自動でマイクが有効になります。",
                             checked = microphoneSettings.startOnLaunch,
                             enabled = microphoneControlsEnabled,
@@ -8859,7 +9521,7 @@ private fun MemoMoveEditScreen(
             .onGloballyPositioned { rootBounds = it.boundsInWindow() }
         ) {
         Column(Modifier.fillMaxSize()) {
-            CompactHeader("編集")
+            CompactHeader("カード変更")
             if (memos.isEmpty()) {
                 PlaceholderBody("移動できるカードがありません")
             } else {
@@ -9225,8 +9887,8 @@ private fun EditMemoHeader(
                 .fillMaxWidth()
                 .height(70.dp)
         ) {
-            ShoppingPatternImage(
-                pattern = memo.imagePattern,
+            MemoCardImage(
+                memo = memo,
                 modifier = Modifier.matchParentSize()
             )
             Box(
@@ -9290,17 +9952,13 @@ private fun EditMoveEntryRow(
 ) {
     val sizes = LocalAppFontSizes.current
     var rowBounds by remember { mutableStateOf<Rect?>(null) }
-    val moveSparkleAlpha = rememberSparkleAlpha(recentlyMoved)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .graphicsLayer { alpha = if (isDragging) 0.18f else 1f }
-            .then(
-                if (entry.checked) {
-                    Modifier.background(CompletedEntryBackground)
-                } else {
-                    Modifier.recentMoveBackground(recentlyMoved, Color.White, moveSparkleAlpha)
-                }
+            .recentMoveBackground(
+                active = recentlyMoved,
+                normalColor = if (entry.checked) CompletedEntryBackground else Color.White
             )
             .onGloballyPositioned { rowBounds = it.boundsInWindow() }
             .pointerInput(memo.id, entry.id, side) {
@@ -10403,6 +11061,7 @@ private fun Header(
 @Composable
 private fun BottomIconBar(
     screen: Screen,
+    simpleModeEnabled: Boolean,
     onHome: () -> Unit,
     onEdit: () -> Unit,
     onSettings: () -> Unit,
@@ -10418,11 +11077,56 @@ private fun BottomIconBar(
         verticalAlignment = Alignment.CenterVertically
     ) {
         BottomIcon(R.drawable.icon_ad, R.drawable.nav_selected_ad, "広告", screen == Screen.Ads, onAds)
-        BottomIcon(R.drawable.icon_edit, R.drawable.nav_selected_edit, "編集", screen == Screen.Edit, onEdit)
+        if (!simpleModeEnabled) {
+            BottomIcon(R.drawable.icon_edit, R.drawable.nav_selected_edit, "カード変更", screen == Screen.Edit, onEdit)
+        }
         BottomIcon(R.drawable.icon_home_nav, R.drawable.nav_selected_home, "ホーム", screen == Screen.Home, onHome)
-        BottomIcon(R.drawable.icon_favorite_nav, R.drawable.nav_selected_favorite, "お気に入り", screen == Screen.Favorites, onFavorite)
+        if (!simpleModeEnabled) {
+            BottomIcon(R.drawable.icon_favorite_nav, R.drawable.nav_selected_favorite, "お気に入り", screen == Screen.Favorites, onFavorite)
+        }
         BottomIcon(R.drawable.icon_settings_nav, R.drawable.nav_selected_settings, "設定", screen == Screen.Settings, onSettings)
     }
+}
+
+@Composable
+private fun InitialModeSelectionDialog(
+    onSelect: (Boolean) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = {},
+        title = {
+            Text(
+                "モード選択",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    "かんたんモードと、高機能モードのどちらを使用しますか。",
+                    fontSize = 16.sp,
+                    lineHeight = 22.sp
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "※モードは設定からいつでも変更できます。",
+                    color = Color(0xFF666666),
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSelect(true) }) {
+                Text("かんたんモード")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { onSelect(false) }) {
+                Text("高機能モード")
+            }
+        }
+    )
 }
 
 @Composable

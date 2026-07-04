@@ -11,11 +11,13 @@ private const val PREF_NAME = "shopping_memo"
 private const val PREF_MEMOS = "memos"
 private const val PREF_ONE_HAND_MODE = "one_hand_mode_enabled"
 private const val PREF_SIMPLE_MODE = "simple_mode_enabled"
+private const val PREF_MODE_SELECTION_COMPLETED = "mode_selection_completed"
 private const val PREF_LEFT_HAND_MODE = "left_hand_mode_enabled"
 private const val PREF_LARGE_FONT = "large_font_enabled"
 private const val PREF_MIC_START_ON_LAUNCH = "mic_start_on_launch"
 private const val PREF_MIC_STOP_TIMEOUT_MINUTES = "mic_stop_timeout_minutes"
 private const val PREF_MIC_DISABLED = "mic_disabled"
+private const val PREF_KEEP_COMPLETED_ITEMS_IN_PLACE = "keep_completed_items_in_place"
 private const val PREF_HOME_TITLE_PATTERN = "home_title_pattern"
 private const val PREF_TEMPORARY_TITLE_PATTERN = "temporary_title_pattern"
 private const val PREF_SUPPORT_AD_WATCH_DATE = "support_ad_watch_date"
@@ -41,6 +43,7 @@ fun loadMemos(context: Context): List<ShoppingMemo> {
                 favorite = obj.optBoolean("favorite", false),
                 trashed = obj.optBoolean("trashed", false),
                 imagePattern = obj.optInt("imagePattern", 0),
+                customImageUri = obj.optString("customImageUri").takeIf { it.isNotBlank() },
                 entries = readEntries(obj.optJSONArray("entries")),
                 deletedEntries = readEntries(obj.optJSONArray("deletedEntries"))
             )
@@ -50,7 +53,13 @@ fun loadMemos(context: Context): List<ShoppingMemo> {
 
 fun saveMemos(context: Context, memos: List<ShoppingMemo>) {
     val array = JSONArray()
-    memos.filter { it.trashed || it.title.isNotBlank() || it.entries.any { entry -> entry.name.isNotBlank() } || it.deletedEntries.any { entry -> entry.name.isNotBlank() } }
+    memos.filter {
+        it.trashed ||
+            it.title.isNotBlank() ||
+            !it.customImageUri.isNullOrBlank() ||
+            it.entries.any { entry -> entry.name.isNotBlank() } ||
+            it.deletedEntries.any { entry -> entry.name.isNotBlank() }
+    }
         .forEach { memo ->
         array.put(JSONObject().apply {
             put("id", memo.id)
@@ -58,6 +67,7 @@ fun saveMemos(context: Context, memos: List<ShoppingMemo>) {
             put("favorite", memo.favorite)
             put("trashed", memo.trashed)
             put("imagePattern", memo.imagePattern)
+            memo.customImageUri?.takeIf { it.isNotBlank() }?.let { put("customImageUri", it) }
             put("entries", JSONArray().also { entries ->
                 memo.entries.filter { it.name.isNotBlank() }.forEach { entry ->
                     entries.put(JSONObject().apply {
@@ -110,6 +120,21 @@ fun saveSimpleModeEnabled(context: Context, enabled: Boolean) {
         .apply()
 }
 
+fun loadModeSelectionCompleted(context: Context): Boolean {
+    val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    return prefs.getBoolean(
+        PREF_MODE_SELECTION_COMPLETED,
+        prefs.contains(PREF_SIMPLE_MODE) || prefs.contains(PREF_MEMOS)
+    )
+}
+
+fun saveModeSelectionCompleted(context: Context, completed: Boolean) {
+    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_MODE_SELECTION_COMPLETED, completed)
+        .apply()
+}
+
 fun loadLeftHandModeEnabled(context: Context): Boolean {
     return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         .getBoolean(PREF_LEFT_HAND_MODE, false)
@@ -149,6 +174,18 @@ fun saveMicrophoneSettings(context: Context, settings: MicrophoneSettings) {
         .putBoolean(PREF_MIC_START_ON_LAUNCH, settings.startOnLaunch)
         .putInt(PREF_MIC_STOP_TIMEOUT_MINUTES, settings.stopTimeoutMinutes)
     editor.apply()
+}
+
+fun loadKeepCompletedItemsInPlace(context: Context): Boolean {
+    return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .getBoolean(PREF_KEEP_COMPLETED_ITEMS_IN_PLACE, false)
+}
+
+fun saveKeepCompletedItemsInPlace(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_KEEP_COMPLETED_ITEMS_IN_PLACE, enabled)
+        .apply()
 }
 
 fun loadHomeTitlePattern(context: Context): Int {

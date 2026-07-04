@@ -30,6 +30,7 @@ class ShoppingMemo(
     favorite: Boolean = false,
     trashed: Boolean = false,
     imagePattern: Int = 0,
+    customImageUri: String? = null,
     entries: List<ShoppingEntry> = emptyList(),
     deletedEntries: List<ShoppingEntry> = emptyList()
 ) {
@@ -37,6 +38,7 @@ class ShoppingMemo(
     var favorite by mutableStateOf(favorite)
     var trashed by mutableStateOf(trashed)
     var imagePattern by mutableStateOf(imagePattern)
+    var customImageUri by mutableStateOf(customImageUri)
     val entries = mutableStateListOf<ShoppingEntry>().also { it.addAll(entries) }
     val deletedEntries = mutableStateListOf<ShoppingEntry>().also { it.addAll(deletedEntries) }
 }
