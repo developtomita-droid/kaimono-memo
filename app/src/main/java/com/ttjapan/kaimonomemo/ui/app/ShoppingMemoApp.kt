@@ -1,7 +1,11 @@
 package com.ttjapan.kaimonomemo.ui.app
 
+import android.accounts.AccountManager
 import android.Manifest
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -10,6 +14,7 @@ import android.media.ExifInterface
 import android.net.Uri
 import android.os.Environment
 import android.util.Log
+import android.widget.Toast
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -45,6 +50,8 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.absoluteOffset
+import androidx.compose.foundation.layout.absolutePadding
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -68,6 +75,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -94,6 +102,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Scaffold
@@ -144,9 +153,12 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
@@ -158,15 +170,28 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.ttjapan.kaimonomemo.R
+import com.google.android.gms.ads.AdError
+import com.google.android.gms.ads.AdRequest
+import com.google.android.gms.ads.AdSize
+import com.google.android.gms.ads.AdView
+import com.google.android.gms.ads.FullScreenContentCallback
+import com.google.android.gms.ads.LoadAdError
+import com.google.android.gms.ads.rewarded.RewardedAd
+import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
 import com.ttjapan.kaimonomemo.data.MicrophoneSettings
 import com.ttjapan.kaimonomemo.data.assignDefaultTitleIfBlank
 import com.ttjapan.kaimonomemo.data.loadKeepCompletedItemsInPlace
@@ -307,6 +332,10 @@ private const val VoiceScrollDelayMillis = 20L
 private const val OneHandMaxOffsetRatio = 0.46f
 private const val OneHandScrollSpeedMultiplier = 1.5f
 private const val TemporaryMemoId = "temporary-shopping-memo"
+private const val GoogleAccountType = "com.google"
+private const val GmailPackageName = "com.google.android.gm"
+private const val AdMobSampleBannerAdUnitId = "ca-app-pub-3940256099942544/6300978111"
+private const val AdMobSampleRewardedAdUnitId = "ca-app-pub-3940256099942544/5224354917"
 private const val TemporaryMemoTitle = "一時的メモ"
 private val LegacyTemporaryMemoTitles = setOf("テンポラリ", "お買い物リスト")
 private const val HomeOperationScale = 0.88f
@@ -328,6 +357,38 @@ private val HomeProgressBarHeight = 44.dp
 private const val HomeCarouselTraceTag = "HomeCarouselTrace"
 private const val EditMoveTraceTag = "EditMoveTrace"
 private val CompletedEntryBackground = Color(0xFFE8E8E8)
+
+private fun keyboardAnchoredFabBottomPadding(
+    view: android.view.View,
+    containerBounds: Rect?,
+    imeVisible: Boolean,
+    density: Density
+): Dp {
+    if (!imeVisible) return 22.dp
+    val bounds = containerBounds ?: return FabKeyboardGap
+    val visibleFrame = android.graphics.Rect()
+    view.getWindowVisibleDisplayFrame(visibleFrame)
+    val location = IntArray(2)
+    view.getLocationOnScreen(location)
+    val visibleKeyboardTop = (visibleFrame.bottom - location[1]).toFloat().takeIf { it > 0f }
+    val imeKeyboardTop = ViewCompat.getRootWindowInsets(view)
+        ?.getInsets(WindowInsetsCompat.Type.ime())
+        ?.bottom
+        ?.takeIf { it > 0 }
+        ?.let { imeBottomPx ->
+            val rootLocation = IntArray(2)
+            view.rootView.getLocationOnScreen(rootLocation)
+            (rootLocation[1] + view.rootView.height - imeBottomPx - location[1]).toFloat()
+        }
+        ?.takeIf { it > 0f }
+    val keyboardTopInWindow = listOfNotNull(visibleKeyboardTop, imeKeyboardTop).minOrNull()
+        ?: return FabKeyboardGap
+    if (keyboardTopInWindow <= 0f) return FabKeyboardGap
+    val overlapPx = (bounds.bottom - keyboardTopInWindow).coerceAtLeast(0f)
+    return with(density) {
+        (overlapPx + FabKeyboardGap.toPx()).toDp().coerceAtLeast(FabKeyboardGap)
+    }
+}
 
 private data class AppFontSizes(
     val listText: TextUnit,
@@ -383,10 +444,188 @@ private fun appFontSizes(large: Boolean): AppFontSizes {
 
 private val LocalAppFontSizes = staticCompositionLocalOf { appFontSizes(false) }
 
+private fun appLayoutDirection(locale: Locale = Locale.getDefault()): LayoutDirection {
+    return if (locale.language.lowercase(Locale.ROOT) in RtlLanguageCodes) {
+        LayoutDirection.Rtl
+    } else {
+        LayoutDirection.Ltr
+    }
+}
+
+private val RtlLanguageCodes = setOf(
+    "ar",
+    "fa",
+    "he",
+    "iw",
+    "ur",
+    "ps",
+    "sd",
+    "ug",
+    "yi"
+)
+
+private val PhysicalBottomLeftAlignment = object : Alignment {
+    override fun align(size: IntSize, space: IntSize, layoutDirection: LayoutDirection): IntOffset {
+        return IntOffset(0, space.height - size.height)
+    }
+}
+
+private val PhysicalBottomRightAlignment = object : Alignment {
+    override fun align(size: IntSize, space: IntSize, layoutDirection: LayoutDirection): IntOffset {
+        return IntOffset(space.width - size.width, space.height - size.height)
+    }
+}
+
+private val PhysicalTopLeftAlignment = object : Alignment {
+    override fun align(size: IntSize, space: IntSize, layoutDirection: LayoutDirection): IntOffset {
+        return IntOffset.Zero
+    }
+}
+
+private fun physicalBottomSideAlignment(leftSide: Boolean): Alignment {
+    return if (leftSide) PhysicalBottomLeftAlignment else PhysicalBottomRightAlignment
+}
+
 private fun isTemporaryMemo(memo: ShoppingMemo): Boolean = memo.id == TemporaryMemoId
 
 private fun memoDisplayTitle(memo: ShoppingMemo, fallback: String = "タイトル未入力"): String {
     return if (isTemporaryMemo(memo)) TemporaryMemoTitle else memo.title.ifBlank { fallback }
+}
+
+private fun memoDisplayTitle(context: Context, memo: ShoppingMemo): String {
+    return if (isTemporaryMemo(memo)) {
+        context.getString(R.string.temporary_memo_title)
+    } else {
+        memo.title.ifBlank { context.getString(R.string.title_untitled) }
+    }
+}
+
+@Composable
+private fun localizedMemoDisplayTitle(
+    memo: ShoppingMemo,
+    fallbackResId: Int = R.string.title_untitled
+): String {
+    val temporaryTitle = stringResource(R.string.temporary_memo_title)
+    val fallback = stringResource(fallbackResId)
+    return if (isTemporaryMemo(memo)) temporaryTitle else memo.title.ifBlank { fallback }
+}
+
+@Composable
+private fun completedCountSummary(doneCount: Int, totalCount: Int): String {
+    return stringResource(R.string.completed_count_summary, doneCount, totalCount)
+}
+
+private fun sendableShoppingMemos(memos: List<ShoppingMemo>): List<ShoppingMemo> {
+    return memos.filter { memo ->
+        memo.entries.any { it.name.isNotBlank() }
+    }
+}
+
+private fun shoppingListEmailSubject(context: Context, memos: List<ShoppingMemo>): String {
+    return if (memos.size == 1) {
+        context.getString(R.string.email_subject_single, memoDisplayTitle(context, memos.first()))
+    } else {
+        context.getString(R.string.email_subject_multi)
+    }
+}
+
+private fun shoppingListEmailBody(context: Context, memos: List<ShoppingMemo>): String {
+    val builder = StringBuilder()
+    builder.appendLine(context.getString(R.string.email_body_title))
+    builder.appendLine()
+    memos.forEachIndexed { memoIndex, memo ->
+        if (memoIndex > 0) builder.appendLine()
+        builder.appendLine(context.getString(R.string.email_body_card_title, memoDisplayTitle(context, memo)))
+        val activeEntries = memo.entries.filter { it.name.isNotBlank() && !it.checked }
+        val completedEntries = memo.entries.filter { it.name.isNotBlank() && it.checked }
+        if (activeEntries.isEmpty() && completedEntries.isEmpty()) {
+            builder.appendLine(context.getString(R.string.item_none))
+        } else {
+            if (activeEntries.isNotEmpty()) {
+                builder.appendLine(context.getString(R.string.email_section_active))
+                activeEntries.forEachIndexed { index, entry ->
+                    builder.appendLine("${index + 1}. ${entry.name}")
+                }
+            }
+            if (completedEntries.isNotEmpty()) {
+                if (activeEntries.isNotEmpty()) builder.appendLine()
+                builder.appendLine(context.getString(R.string.completed))
+                completedEntries.forEachIndexed { index, entry ->
+                    builder.appendLine("${index + 1}. ${entry.name}")
+                }
+            }
+        }
+    }
+    return builder.toString().trimEnd()
+}
+
+private fun parseEmailRecipients(address: String): Array<String> {
+    return address.split(',', ';', '、', '\n', '\t', ' ')
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .toTypedArray()
+}
+
+@Suppress("DEPRECATION")
+private fun gmailAccountChooserIntent(title: String): Intent {
+    return AccountManager.newChooseAccountIntent(
+        null,
+        null,
+        arrayOf(GoogleAccountType),
+        true,
+        title,
+        null,
+        null,
+        null
+    )
+}
+
+private tailrec fun Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }
+}
+
+private fun loadSupportRewardedAd(
+    context: Context,
+    onLoaded: (RewardedAd) -> Unit,
+    onFailed: (String) -> Unit
+) {
+    RewardedAd.load(
+        context,
+        AdMobSampleRewardedAdUnitId,
+        AdRequest.Builder().build(),
+        object : RewardedAdLoadCallback() {
+            override fun onAdLoaded(ad: RewardedAd) {
+                onLoaded(ad)
+            }
+
+            override fun onAdFailedToLoad(error: LoadAdError) {
+                onFailed(error.message)
+            }
+        }
+    )
+}
+
+private fun launchShoppingListEmail(context: Context, address: String, memos: List<ShoppingMemo>) {
+    val emailIntent = Intent(Intent.ACTION_SENDTO).apply {
+        data = Uri.parse("mailto:")
+        putExtra(Intent.EXTRA_EMAIL, parseEmailRecipients(address))
+        putExtra(Intent.EXTRA_SUBJECT, shoppingListEmailSubject(context, memos))
+        putExtra(Intent.EXTRA_TEXT, shoppingListEmailBody(context, memos))
+    }
+    val gmailIntent = Intent(emailIntent).setPackage(GmailPackageName)
+    try {
+        context.startActivity(gmailIntent)
+    } catch (_: Exception) {
+        try {
+            context.startActivity(Intent.createChooser(emailIntent, context.getString(R.string.email_app_chooser_title)))
+        } catch (_: Exception) {
+            Toast.makeText(context, context.getString(R.string.email_app_not_found), Toast.LENGTH_SHORT).show()
+        }
+    }
 }
 
 private fun formatMemoOrderForTrace(memos: List<ShoppingMemo>): String {
@@ -752,7 +991,10 @@ fun ShoppingMemoApp() {
         currentScreen = Screen.Home
     }
     fun addMemo() {
-        val memo = ShoppingMemo(entries = listOf(ShoppingEntry(name = "")))
+        val memo = ShoppingMemo(
+            imagePattern = defaultNewMemoImagePattern(),
+            entries = listOf(ShoppingEntry(name = ""))
+        )
         val insertIndex = (memos.indexOfFirst { isTemporaryMemo(it) } + 1)
             .coerceIn(0, memos.size)
         memos.add(insertIndex, memo)
@@ -781,7 +1023,10 @@ fun ShoppingMemoApp() {
     BackHandler(enabled = currentScreen == Screen.TitlePatternPicker) {
         closeTitlePatternPicker()
     }
-    CompositionLocalProvider(LocalAppFontSizes provides appFontSizes(largeFontEnabled)) {
+    CompositionLocalProvider(
+        LocalAppFontSizes provides appFontSizes(largeFontEnabled),
+        LocalLayoutDirection provides appLayoutDirection()
+    ) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             bottomBar = {
@@ -940,6 +1185,7 @@ fun ShoppingMemoApp() {
                     )
                 }
                 Screen.Settings -> SettingsScreen(
+                    memos = listOf(temporaryMemo) + activeMemos,
                     memoCount = activeMemos.size,
                     oneHandModeEnabled = oneHandModeEnabled,
                     onOneHandModeChanged = ::updateOneHandMode,
@@ -1005,7 +1251,7 @@ private fun AdvancedHomeScreen(
     val context = LocalContext.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-    val tabs = listOf("アイテム", "ゴミ箱")
+    val tabs = listOf(stringResource(R.string.tab_items), stringResource(R.string.tab_trash))
     val pagerState = rememberPagerState(pageCount = { tabs.size })
     val activeGridState = rememberLazyGridState()
     val trashGridState = rememberLazyGridState()
@@ -1093,7 +1339,7 @@ private fun AdvancedHomeScreen(
     } else {
         null
     }
-    val homeHeaderTitle = homeHeaderMemo?.let { memoDisplayTitle(it) } ?: "買い物メモ"
+    val homeHeaderTitle = homeHeaderMemo?.let { localizedMemoDisplayTitle(it) } ?: stringResource(R.string.shopping_memo_title)
     val latestOrderedHomeMemoIds by rememberUpdatedState(orderedHomeMemos.map { it.id })
 
     fun formatHomeMemoId(id: String?): String {
@@ -1644,7 +1890,7 @@ private fun AdvancedHomeScreen(
             }
         }
 
-        if (draggingId == null) {
+        if (draggingId == null && pagerState.currentPage == 0) {
             val addControlGap = 10.dp * HomeOperationScale
             val addControlWidth = homeControlBounds?.let { bounds ->
                 with(density) { bounds.width.toDp() }
@@ -1655,10 +1901,10 @@ private fun AdvancedHomeScreen(
                 onClick = onAddMemo,
                 contentScale = HomeOperationScale,
                 modifier = Modifier
-                    .align(if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd)
-                    .padding(
-                        start = if (leftHandModeEnabled) addSidePadding else 0.dp,
-                        end = if (leftHandModeEnabled) 0.dp else addSidePadding,
+                    .align(physicalBottomSideAlignment(leftHandModeEnabled))
+                    .absolutePadding(
+                        left = if (leftHandModeEnabled) addSidePadding else 0.dp,
+                        right = if (leftHandModeEnabled) 0.dp else addSidePadding,
                         bottom = 12.dp
                     )
                     .size(86.dp * HomeOperationScale)
@@ -1673,6 +1919,7 @@ private fun AdvancedHomeScreen(
                 memo = draggedMemo,
                 sizeScale = HomeOperationScale,
                 modifier = Modifier
+                    .align(PhysicalTopLeftAlignment)
                     .graphicsLayer {
                         translationX = draggedBounds.left - (homeBounds?.left ?: 0f) + dragOffset.x
                         translationY = draggedBounds.top - (homeBounds?.top ?: 0f) + dragOffset.y
@@ -1695,7 +1942,9 @@ private fun AdvancedHomeScreen(
                     x = temporaryDragPoint.x - (homeBounds?.left ?: 0f) - 84f,
                     y = temporaryDragPoint.y - (homeBounds?.top ?: 0f) - 28f
                 ),
-                modifier = Modifier.zIndex(10f)
+                modifier = Modifier
+                    .align(PhysicalTopLeftAlignment)
+                    .zIndex(10f)
             )
         }
     }
@@ -2213,7 +2462,8 @@ private fun HomeMemoCarouselPage(
 
                     Box(
                         modifier = Modifier
-                            .offset(x = displayedX, y = y)
+                            .align(PhysicalTopLeftAlignment)
+                            .absoluteOffset(x = displayedX, y = y)
                             .width(cardWidth)
                             .onGloballyPositioned {
                                 val bounds = it.boundsInWindow()
@@ -2337,43 +2587,50 @@ private fun HomeMemoCarouselPage(
 
         val controlWidth = ((maxWidth * 0.34f).coerceIn(104.dp, 150.dp)) * HomeOperationScale
         val memoButtonSize = (controlWidth * 0.68f).coerceIn(68.dp * HomeOperationScale, 92.dp * HomeOperationScale)
-        Column(
-            modifier = Modifier
-                .align(if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd)
-                .padding(12.dp)
-                .width(controlWidth)
-                .zIndex(200f)
-                .onGloballyPositioned { onControlPositioned(it.boundsInWindow()) },
-            horizontalAlignment = if (leftHandModeEnabled) Alignment.Start else Alignment.End
-        ) {
-            HomeTrashDisplayButton(
-                onClick = onShowTrash,
-                sizeScale = HomeOperationScale,
-                modifier = Modifier.size(86.dp * HomeOperationScale)
-            )
-            Spacer(Modifier.height(10.dp * HomeOperationScale))
-            Box(
+        val controlSideX = if (leftHandModeEnabled) {
+            12.dp
+        } else {
+            maxWidth - controlWidth - 12.dp
+        }
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f)
+                    .align(PhysicalBottomLeftAlignment)
+                    .absoluteOffset(x = controlSideX, y = (-12).dp)
+                    .width(controlWidth)
+                    .zIndex(200f)
+                    .onGloballyPositioned { onControlPositioned(it.boundsInWindow()) },
+                horizontalAlignment = if (leftHandModeEnabled) Alignment.Start else Alignment.End
             ) {
-                HomeMemoButton(
-                    onClick = onOpenTemporaryMemo,
+                HomeTrashDisplayButton(
+                    onClick = onShowTrash,
                     sizeScale = HomeOperationScale,
-                    modifier = Modifier
-                        .size(memoButtonSize)
-                        .align(if (leftHandModeEnabled) Alignment.TopEnd else Alignment.TopStart)
-                        .offset(
-                            x = if (leftHandModeEnabled) memoButtonSize * 0.62f else -(memoButtonSize * 0.62f),
-                            y = -(memoButtonSize * 0.62f)
-                        )
-                        .zIndex(1f)
+                    modifier = Modifier.size(86.dp * HomeOperationScale)
                 )
-                Spacer(
+                Spacer(Modifier.height(10.dp * HomeOperationScale))
+                Box(
                     modifier = Modifier
-                        .matchParentSize()
-                        .align(if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd)
-                )
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                ) {
+                    HomeMemoButton(
+                        onClick = onOpenTemporaryMemo,
+                        sizeScale = HomeOperationScale,
+                        modifier = Modifier
+                            .size(memoButtonSize)
+                            .align(if (leftHandModeEnabled) Alignment.TopEnd else Alignment.TopStart)
+                            .offset(
+                                x = if (leftHandModeEnabled) memoButtonSize * 0.62f else -(memoButtonSize * 0.62f),
+                                y = -(memoButtonSize * 0.62f)
+                            )
+                            .zIndex(1f)
+                    )
+                    Spacer(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .align(if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd)
+                    )
+                }
             }
         }
     }
@@ -2437,7 +2694,7 @@ private fun HomeSelectedMemoBackdrop(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = memo.title.ifBlank { "タイトル入力" },
+                text = localizedMemoDisplayTitle(memo, R.string.title_input),
                 color = Color(0xFF212121),
                 fontSize = 28.sp,
                 lineHeight = 32.sp,
@@ -2481,7 +2738,7 @@ private fun HomeSelectedMemoBackdrop(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "アイテムはありません",
+                    text = stringResource(R.string.items_empty),
                     color = Color(0xFF888888),
                     fontSize = sizes.listPlaceholder,
                     fontWeight = FontWeight.Bold
@@ -2649,7 +2906,7 @@ private fun HomeCarouselDropTargets(
     @Composable
     fun ImageTarget(modifier: Modifier = Modifier) {
         HomeCarouselDropTargetCard(
-            icon = "\u753B\u50CF",
+            icon = stringResource(R.string.action_image),
             containerColor = Color(0xFFE3F2FD),
             contentColor = Color(0xFF1565C0),
             active = imageTargetActive,
@@ -2668,19 +2925,21 @@ private fun HomeCarouselDropTargets(
         )
     }
 
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(0.dp)
-    ) {
-        val targetModifier = Modifier
-            .weight(1f)
-            .fillMaxHeight()
-        if (leftHandModeEnabled) {
-            TrashTarget(targetModifier)
-            ImageTarget(targetModifier)
-        } else {
-            ImageTarget(targetModifier)
-            TrashTarget(targetModifier)
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Row(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.spacedBy(0.dp)
+        ) {
+            val targetModifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+            if (leftHandModeEnabled) {
+                TrashTarget(targetModifier)
+                ImageTarget(targetModifier)
+            } else {
+                ImageTarget(targetModifier)
+                TrashTarget(targetModifier)
+            }
         }
     }
 }
@@ -2728,8 +2987,8 @@ private fun HomeCardDropTargets(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         HomeDropTargetCard(
-            title = "Image 変更",
-            icon = "画像",
+            title = stringResource(R.string.image_change_title_short),
+            icon = stringResource(R.string.action_image),
             containerColor = Color(0xFFE3F2FD),
             contentColor = Color(0xFF1565C0),
             active = imageTargetActive,
@@ -2738,8 +2997,8 @@ private fun HomeCardDropTargets(
                 .onGloballyPositioned { onImageTargetPositioned(it.boundsInWindow()) }
         )
         HomeDropTargetCard(
-            title = "ゴミ箱",
-            icon = "削除",
+            title = stringResource(R.string.tab_trash),
+            icon = stringResource(R.string.action_delete),
             containerColor = Color(0xFFFFEBEE),
             contentColor = Color(0xFFD32F2F),
             active = trashTargetActive,
@@ -2778,7 +3037,7 @@ private fun HomeDropTargetCard(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = if (isTrashTarget) "🗑" else "画像",
+                text = if (isTrashTarget) "🗑" else stringResource(R.string.action_image),
                 color = contentColor,
                 fontSize = if (isTrashTarget) 56.sp else 28.sp,
                 fontWeight = FontWeight.Bold
@@ -2796,7 +3055,7 @@ private fun HomeTrashPage(
 ) {
     if (memos.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-            Text("ゴミ箱は空です。", color = Color(0xFF888888), fontSize = 16.sp, modifier = Modifier.padding(top = 44.dp))
+            Text(stringResource(R.string.trash_empty), color = Color(0xFF888888), fontSize = 16.sp, modifier = Modifier.padding(top = 44.dp))
         }
         return
     }
@@ -2854,20 +3113,20 @@ private fun DeletedMemoCard(
                     .padding(horizontal = 10.dp)
             ) {
                 Text(
-                    memoDisplayTitle(memo),
+                    localizedMemoDisplayTitle(memo),
                     color = Color(0xFF333333),
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text("未購入 $activeCount 件 / 完了 $doneCount 件", color = Color(0xFF777777), fontSize = 13.sp)
+                Text(stringResource(R.string.active_done_count_summary, activeCount, doneCount), color = Color(0xFF777777), fontSize = 13.sp)
             }
             TextButton(onClick = onRestore) {
-                Text("戻す", color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.action_restore), color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
             }
             TextButton(onClick = onErase) {
-                Text("消去", color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.action_erase), color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -2883,20 +3142,20 @@ private fun ImageChangeChoiceDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("${memo.title.ifBlank { "カード" }} の画像変更") },
+        title = { Text(stringResource(R.string.image_change_title, localizedMemoDisplayTitle(memo, R.string.card))) },
         text = {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                ImageChoiceButton("カメラ", "撮影", Color(0xFFE3F2FD), Color(0xFF1565C0), Modifier.weight(1f), onCamera)
-                ImageChoiceButton("フォルダ", "写真", Color(0xFFE8F5E9), Color(0xFF2E7D32), Modifier.weight(1f), onFolder)
-                ImageChoiceButton("パターン", "10種", Color(0xFFFFF8E1), Color(0xFFF57F17), Modifier.weight(1f), onPattern)
+                ImageChoiceButton(stringResource(R.string.camera), stringResource(R.string.shoot), Color(0xFFE3F2FD), Color(0xFF1565C0), Modifier.weight(1f), onCamera)
+                ImageChoiceButton(stringResource(R.string.folder), stringResource(R.string.photo), Color(0xFFE8F5E9), Color(0xFF2E7D32), Modifier.weight(1f), onFolder)
+                ImageChoiceButton(stringResource(R.string.pattern), stringResource(R.string.pattern_count, activeShoppingVisualPatterns().size), Color(0xFFFFF8E1), Color(0xFFF57F17), Modifier.weight(1f), onPattern)
             }
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("キャンセル") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         }
     )
 }
@@ -2982,7 +3241,7 @@ private fun HomeScreen(
     ) {
     Column(Modifier.fillMaxSize()) {
         Header(
-            title = "買い物メモ",
+            title = stringResource(R.string.shopping_memo_title),
             trailing = {
                 Box(
                     modifier = Modifier
@@ -3066,7 +3325,7 @@ private fun HomeScreen(
                 }
                 HomeFixedActionButton(
                     icon = "+",
-                    label = "追加",
+                    label = stringResource(R.string.action_add),
                     containerColor = Color(0xFFEAF4FF),
                     contentColor = Color(0xFF1976D2),
                     onClick = onAddMemo,
@@ -3126,16 +3385,16 @@ private fun HomeScreen(
     pendingDelete?.let { memo ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            title = { Text("削除しますか？") },
-            text = { Text("${memo.title.ifBlank { "このカード" }} を削除します。") },
+            title = { Text(stringResource(R.string.delete_card_confirm_title)) },
+            text = { Text(stringResource(R.string.delete_card_confirm_body, localizedMemoDisplayTitle(memo, R.string.this_card))) },
             confirmButton = {
                 TextButton(onClick = {
                     onDeleteMemo(memo)
                     pendingDelete = null
-                }) { Text("はい", color = Color(0xFFD32F2F)) }
+                }) { Text(stringResource(R.string.action_yes), color = Color(0xFFD32F2F)) }
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("キャンセル") }
+                TextButton(onClick = { pendingDelete = null }) { Text(stringResource(R.string.action_cancel)) }
             }
         )
     }
@@ -3194,7 +3453,7 @@ private fun TemporaryMemoPanel(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "一時的",
+                    text = stringResource(R.string.temporary_short_title),
                     color = Color(0xFFD32F2F),
                     fontSize = 20.sp,
                     lineHeight = 23.sp,
@@ -3209,7 +3468,7 @@ private fun TemporaryMemoPanel(
                     .padding(horizontal = 8.dp, vertical = 8.dp)
             ) {
                 Text(
-                    "${doneEntries.size}/$totalCount 件 完了",
+                    completedCountSummary(doneEntries.size, totalCount),
                     color = Color(0xFF2E7D32),
                     fontSize = 13.sp,
                     lineHeight = 15.sp
@@ -3228,7 +3487,7 @@ private fun TemporaryMemoPanel(
             ) {
                 if (activeEntries.isEmpty() && doneEntries.isEmpty()) {
                     item {
-                        Text("空っぽ", color = Color(0xFF999999), fontSize = 13.sp)
+                        Text(stringResource(R.string.empty), color = Color(0xFF999999), fontSize = 13.sp)
                     }
                 } else {
                     items(activeEntries, key = { "temporary-active-${it.id}" }) { entry ->
@@ -3244,7 +3503,7 @@ private fun TemporaryMemoPanel(
                     }
                     if (doneEntries.isNotEmpty()) {
                         item {
-                            Text("完了アイテム", color = Color(0xFFD32F2F), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(stringResource(R.string.completed_items), color = Color(0xFFD32F2F), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                     items(doneEntries, key = { "temporary-done-${it.id}" }) { entry ->
@@ -3359,7 +3618,7 @@ private fun HomeAddScrollButton(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("+", color = Color(0xFF1976D2), fontSize = 40.sp, fontWeight = FontWeight.Bold, lineHeight = 36.sp)
-                    Text("追加", color = Color(0xFF1976D2), fontSize = 18.sp, fontWeight = FontWeight.Bold, lineHeight = 20.sp)
+                    Text(stringResource(R.string.action_add), color = Color(0xFF1976D2), fontSize = 18.sp, fontWeight = FontWeight.Bold, lineHeight = 20.sp)
                 }
                 Spacer(Modifier.width(10.dp))
                 Text("↕", color = Color(0xFFAD1457), fontSize = 46.sp, fontWeight = FontWeight.Bold, lineHeight = 44.sp)
@@ -3380,7 +3639,7 @@ private fun HomeMicrophoneButton(
     ) {
         Icon(
             painter = painterResource(R.drawable.ic_fab_mic),
-            contentDescription = "マイク",
+            contentDescription = stringResource(R.string.content_description_microphone),
             tint = Color.White,
             modifier = Modifier.size(50.dp)
         )
@@ -3556,13 +3815,13 @@ private fun MemoCard(
                     .padding(horizontal = 8.dp * sizeScale, vertical = 6.dp * sizeScale)
             ) {
                 Text(
-                    "$doneCount/$totalCount 件 完了",
+                    completedCountSummary(doneCount, totalCount),
                     color = Color(0xFF2E7D32),
                     fontSize = (16f * sizeScale).sp,
                     lineHeight = (18f * sizeScale).sp
                 )
                 Text(
-                    text = memo.title.ifBlank { "タイトル入力" },
+                    text = localizedMemoDisplayTitle(memo, R.string.title_input),
                     color = Color(0xFF212121),
                     fontSize = (22f * sizeScale).sp,
                     lineHeight = (24f * sizeScale).sp,
@@ -3629,7 +3888,7 @@ private fun MemoNoteIcon(
     ) {
         Box(Modifier.fillMaxSize()) {
             Text(
-                text = "\u30E1\u30E2",
+                text = stringResource(R.string.memo_short),
                 modifier = Modifier.align(Alignment.Center),
                 color = Color(0xFF3A3124),
                 fontSize = (24f * sizeScale).sp,
@@ -3677,7 +3936,7 @@ private fun HomeTrashDisplayButton(
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
-                text = "\u30B4\u30DF\u7BB1\n\u8868\u793A",
+                text = stringResource(R.string.show_trash),
                 color = Color(0xFF1976D2),
                 fontSize = (19f * sizeScale).sp,
                 lineHeight = (23f * sizeScale).sp,
@@ -3697,35 +3956,35 @@ private data class ShoppingImagePattern(
 )
 
 private val ShoppingImagePatterns = listOf(
-    ShoppingImagePattern("赤いカート", "🛒", "＋", Color(0xFFFFEBEE), Color(0xFFD32F2F)),
-    ShoppingImagePattern("野菜かご", "🥬", "🥕", Color(0xFFE8F5E9), Color(0xFF2E7D32)),
-    ShoppingImagePattern("朝食", "🍞", "🥛", Color(0xFFFFF8E1), Color(0xFFF57F17)),
-    ShoppingImagePattern("魚", "🐟", "氷", Color(0xFFE1F5FE), Color(0xFF0277BD)),
-    ShoppingImagePattern("フルーツ", "🍎", "🍌", Color(0xFFFFF3E0), Color(0xFFE65100)),
-    ShoppingImagePattern("米袋", "🍚", "米", Color(0xFFF3E5F5), Color(0xFF6A1B9A)),
-    ShoppingImagePattern("日用品", "🧴", "✓", Color(0xFFE0F2F1), Color(0xFF00796B)),
-    ShoppingImagePattern("冷凍", "❄", "箱", Color(0xFFE3F2FD), Color(0xFF1565C0)),
-    ShoppingImagePattern("カメラ", "📷", "撮", Color(0xFFFCE4EC), Color(0xFFC2185B)),
-    ShoppingImagePattern("写真", "🖼", "選", Color(0xFFEDE7F6), Color(0xFF512DA8))
+    ShoppingImagePattern("Red cart", "🛒", "＋", Color(0xFFFFEBEE), Color(0xFFD32F2F)),
+    ShoppingImagePattern("Vegetable basket", "🥬", "🥕", Color(0xFFE8F5E9), Color(0xFF2E7D32)),
+    ShoppingImagePattern("Breakfast", "🍞", "🥛", Color(0xFFFFF8E1), Color(0xFFF57F17)),
+    ShoppingImagePattern("Fish", "🐟", "❄", Color(0xFFE1F5FE), Color(0xFF0277BD)),
+    ShoppingImagePattern("Fruit", "🍎", "🍌", Color(0xFFFFF3E0), Color(0xFFE65100)),
+    ShoppingImagePattern("Rice bag", "🍚", "", Color(0xFFF3E5F5), Color(0xFF6A1B9A)),
+    ShoppingImagePattern("Daily goods", "🧴", "✓", Color(0xFFE0F2F1), Color(0xFF00796B)),
+    ShoppingImagePattern("Frozen", "❄", "", Color(0xFFE3F2FD), Color(0xFF1565C0)),
+    ShoppingImagePattern("Camera", "📷", "●", Color(0xFFFCE4EC), Color(0xFFC2185B)),
+    ShoppingImagePattern("Photo", "🖼", "✓", Color(0xFFEDE7F6), Color(0xFF512DA8))
 )
 
 private fun activeShoppingImagePatterns(): List<ShoppingImagePattern> {
     val shopPattern = if (Locale.getDefault().language == Locale.JAPANESE.language) {
-        ShoppingImagePattern("100円ショップ", "100\n🛍 🏬", "", Color(0xFFFFF3E0), Color(0xFFE65100))
+        ShoppingImagePattern("100 yen shop", "100\n🛍 🏬", "", Color(0xFFFFF3E0), Color(0xFFE65100))
     } else {
-        ShoppingImagePattern("ショップ", "🛍 🏬\n🛒", "", Color(0xFFFFF3E0), Color(0xFFE65100))
+        ShoppingImagePattern("Shop", "🛍 🏬\n🛒", "", Color(0xFFFFF3E0), Color(0xFFE65100))
     }
     return listOf(
-        ShoppingImagePattern("食料品", "🥬 🍞\n🍚 🐟", "", Color(0xFFE8F5E9), Color(0xFF2E7D32)),
-        ShoppingImagePattern("カート", "🛒", "", Color(0xFFFFEBEE), Color(0xFFD32F2F)),
-        ShoppingImagePattern("家電", "🔌 💡\n📺", "", Color(0xFFE3F2FD), Color(0xFF1565C0)),
-        ShoppingImagePattern("ゲーム", "🎮 ⭐\n🎲", "", Color(0xFFEDE7F6), Color(0xFF512DA8)),
-        ShoppingImagePattern("レストラン", "🍽 ☕\n🍰", "", Color(0xFFFFF8E1), Color(0xFFF57F17)),
-        ShoppingImagePattern("服と靴", "👕 👟\n🧢", "", Color(0xFFFCE4EC), Color(0xFFC2185B)),
-        ShoppingImagePattern("スポーツ用品", "⚽ 🏀\n🎾", "", Color(0xFFE0F2F1), Color(0xFF00796B)),
-        ShoppingImagePattern("サービス業", "😊 🤝\n✨", "", Color(0xFFFFFDE7), Color(0xFFF9A825)),
+        ShoppingImagePattern("Groceries", "🥬 🍞\n🍚 🐟", "", Color(0xFFE8F5E9), Color(0xFF2E7D32)),
+        ShoppingImagePattern("Cart", "🛒", "", Color(0xFFFFEBEE), Color(0xFFD32F2F)),
+        ShoppingImagePattern("Appliances", "🔌 💡\n📺", "", Color(0xFFE3F2FD), Color(0xFF1565C0)),
+        ShoppingImagePattern("Game", "🎮 ⭐\n🎲", "", Color(0xFFEDE7F6), Color(0xFF512DA8)),
+        ShoppingImagePattern("Restaurant", "🍽 ☕\n🍰", "", Color(0xFFFFF8E1), Color(0xFFF57F17)),
+        ShoppingImagePattern("Clothes and shoes", "👕 👟\n🧢", "", Color(0xFFFCE4EC), Color(0xFFC2185B)),
+        ShoppingImagePattern("Sports goods", "⚽ 🏀\n🎾", "", Color(0xFFE0F2F1), Color(0xFF00796B)),
+        ShoppingImagePattern("Services", "😊 🤝\n✨", "", Color(0xFFFFFDE7), Color(0xFFF9A825)),
         shopPattern,
-        ShoppingImagePattern("雑貨", "🧺 🧴\n🧻", "", Color(0xFFF5F5F5), Color(0xFF616161))
+        ShoppingImagePattern("General goods", "🧺 🧴\n🧻", "", Color(0xFFF5F5F5), Color(0xFF616161))
     )
 }
 
@@ -3744,39 +4003,67 @@ private enum class ShoppingVisualKind {
 }
 
 private data class ShoppingVisualPattern(
-    val name: String,
+    val nameResId: Int,
     val kind: ShoppingVisualKind,
     val background: Color,
     val accent: Color
 )
 
-private fun activeShoppingVisualPatterns(): List<ShoppingVisualPattern> {
-    val isJapanese = Locale.getDefault().language == Locale.JAPANESE.language
-    val foodBackground = if (isJapanese) Color(0xFFFFA7B4) else Color(0xFF8FD8FF)
-    return buildList {
-        add(ShoppingVisualPattern("食料品", ShoppingVisualKind.Food, foodBackground, Color(0xFF2E7D32)))
-        add(ShoppingVisualPattern("カート", ShoppingVisualKind.Cart, Color(0xFFFFE166), Color(0xFFD32F2F)))
-        add(ShoppingVisualPattern("家電", ShoppingVisualKind.Appliance, Color(0xFFC994F5), Color(0xFF1565C0)))
-        add(ShoppingVisualPattern("ゲーム", ShoppingVisualKind.Game, Color(0xFFB7EC80), Color(0xFF512DA8)))
-        add(ShoppingVisualPattern("レストラン", ShoppingVisualKind.Restaurant, Color(0xFFFFB63E), Color(0xFFF57F17)))
-        add(ShoppingVisualPattern("衣類", ShoppingVisualKind.Clothing, Color(0xFFFF9FBC), Color(0xFFC2185B)))
-        add(ShoppingVisualPattern("スポーツ用品", ShoppingVisualKind.Sports, Color(0xFF9FDDFF), Color(0xFF00796B)))
-        add(ShoppingVisualPattern("サービス業", ShoppingVisualKind.Service, Color(0xFFFFDC54), Color(0xFFF9A825)))
-        if (isJapanese) {
-            add(ShoppingVisualPattern("100円ショップ", ShoppingVisualKind.HundredYenShop, Color(0xFFFF9FCA), Color(0xFFD32F2F)))
-        }
-        add(ShoppingVisualPattern("ディスカウントショップ", ShoppingVisualKind.DiscountShop, Color(0xFFB9EB55), Color(0xFF8BC34A)))
-        add(ShoppingVisualPattern("日用品", ShoppingVisualKind.DailyGoods, Color(0xFF52D1D1), Color(0xFF00838F)))
+private enum class GroceryVisualRegion {
+    Japan,
+    Asia,
+    Europe
+}
+
+private fun groceryVisualRegion(locale: Locale = Locale.getDefault()): GroceryVisualRegion {
+    val language = locale.language.lowercase(Locale.ROOT)
+    return when {
+        language == Locale.JAPANESE.language -> GroceryVisualRegion.Japan
+        language in setOf("ar", "hi", "id", "ko", "th", "vi", "zh") -> GroceryVisualRegion.Asia
+        else -> GroceryVisualRegion.Europe
     }
 }
 
+private fun isEnglishLocale(locale: Locale = Locale.getDefault()): Boolean {
+    return locale.language.lowercase(Locale.ROOT) == Locale.ENGLISH.language
+}
+
+private fun activeShoppingVisualPatterns(): List<ShoppingVisualPattern> {
+    val region = groceryVisualRegion()
+    val isJapanese = region == GroceryVisualRegion.Japan
+    val foodBackground = when (region) {
+        GroceryVisualRegion.Japan -> Color(0xFFFFA7B4)
+        GroceryVisualRegion.Asia -> Color(0xFFFFE9B8)
+        GroceryVisualRegion.Europe -> Color(0xFF8FD8FF)
+    }
+    return buildList {
+        add(ShoppingVisualPattern(R.string.pattern_food, ShoppingVisualKind.Food, foodBackground, Color(0xFF2E7D32)))
+        add(ShoppingVisualPattern(R.string.pattern_cart, ShoppingVisualKind.Cart, Color(0xFFFFE166), Color(0xFFD32F2F)))
+        add(ShoppingVisualPattern(R.string.pattern_appliance, ShoppingVisualKind.Appliance, Color(0xFFC994F5), Color(0xFF1565C0)))
+        add(ShoppingVisualPattern(R.string.pattern_game, ShoppingVisualKind.Game, Color(0xFFB7EC80), Color(0xFF512DA8)))
+        add(ShoppingVisualPattern(R.string.pattern_restaurant, ShoppingVisualKind.Restaurant, Color(0xFFFFB63E), Color(0xFFF57F17)))
+        add(ShoppingVisualPattern(R.string.pattern_clothing, ShoppingVisualKind.Clothing, Color(0xFFFF9FBC), Color(0xFFC2185B)))
+        add(ShoppingVisualPattern(R.string.pattern_sports, ShoppingVisualKind.Sports, Color(0xFF9FDDFF), Color(0xFF00796B)))
+        add(ShoppingVisualPattern(R.string.pattern_service, ShoppingVisualKind.Service, Color(0xFFFFDC54), Color(0xFFF9A825)))
+        if (isJapanese) {
+            add(ShoppingVisualPattern(R.string.pattern_hundred_yen_shop, ShoppingVisualKind.HundredYenShop, Color(0xFFFF9FCA), Color(0xFFD32F2F)))
+        }
+        add(ShoppingVisualPattern(R.string.pattern_discount_shop, ShoppingVisualKind.DiscountShop, Color(0xFFB9EB55), Color(0xFF8BC34A)))
+        add(ShoppingVisualPattern(R.string.pattern_daily_goods, ShoppingVisualKind.DailyGoods, Color(0xFF52D1D1), Color(0xFF00838F)))
+    }
+}
+
+private fun defaultNewMemoImagePattern(): Int {
+    val index = activeShoppingVisualPatterns().indexOfFirst { it.kind == ShoppingVisualKind.Cart }
+    return if (index >= 0) index else 0
+}
+
 private fun shoppingPatternImageResId(kind: ShoppingVisualKind): Int {
-    val isJapanese = Locale.getDefault().language == Locale.JAPANESE.language
     return when (kind) {
-        ShoppingVisualKind.Food -> if (isJapanese) {
-            R.drawable.pattern_food_jp
-        } else {
-            R.drawable.pattern_food_global
+        ShoppingVisualKind.Food -> when (groceryVisualRegion()) {
+            GroceryVisualRegion.Japan -> R.drawable.pattern_food_jp
+            GroceryVisualRegion.Asia -> R.drawable.pattern_food_asia
+            GroceryVisualRegion.Europe -> R.drawable.pattern_food_europe
         }
         ShoppingVisualKind.Cart -> R.drawable.pattern_cart
         ShoppingVisualKind.Appliance -> R.drawable.pattern_appliance
@@ -3786,7 +4073,11 @@ private fun shoppingPatternImageResId(kind: ShoppingVisualKind): Int {
         ShoppingVisualKind.Sports -> R.drawable.pattern_sports
         ShoppingVisualKind.Service -> R.drawable.pattern_service
         ShoppingVisualKind.HundredYenShop -> R.drawable.pattern_100_yen_shop
-        ShoppingVisualKind.DiscountShop -> R.drawable.pattern_discount_shop
+        ShoppingVisualKind.DiscountShop -> if (isEnglishLocale()) {
+            R.drawable.pattern_discount_shop
+        } else {
+            R.drawable.pattern_discount_shop_no_text
+        }
         ShoppingVisualKind.DailyGoods -> R.drawable.pattern_daily_goods
     }
 }
@@ -4269,7 +4560,7 @@ private fun TitlePatternPickerScreen(
                             contentScale = ContentScale.Fit
                         )
                         Text(
-                            text = "買い物メモ",
+                            text = stringResource(R.string.shopping_memo_title),
                             color = Color(0xFF3E2D22),
                             fontSize = 25.sp,
                             fontWeight = FontWeight.Bold,
@@ -4301,15 +4592,15 @@ private fun PatternPickerScreen(
     return
     Column(Modifier.fillMaxSize()) {
         Header(
-            title = "画像パターン",
+            title = stringResource(R.string.image_pattern_title),
             trailing = {
                 TextButton(onClick = onBack) {
-                    Text("戻る", color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.action_back), color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
                 }
             }
         )
         Text(
-            text = memo.title.ifBlank { "カード" },
+            text = localizedMemoDisplayTitle(memo, R.string.card),
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
             color = Color(0xFF555555),
             fontSize = 18.sp,
@@ -4787,10 +5078,10 @@ private fun PatternPickerGridScreen(
 
 @Composable
 private fun OneHandModeBackdrop(modifier: Modifier = Modifier) {
-    val backdropResId = if (Locale.getDefault().language == Locale.JAPANESE.language) {
-        R.drawable.one_hand_food_pattern_a
-    } else {
-        R.drawable.one_hand_food_pattern_global
+    val backdropResId = when (groceryVisualRegion()) {
+        GroceryVisualRegion.Japan -> R.drawable.one_hand_food_pattern_a
+        GroceryVisualRegion.Asia -> R.drawable.one_hand_food_pattern_asia
+        GroceryVisualRegion.Europe -> R.drawable.one_hand_food_pattern_europe
     }
     Box(
         modifier = modifier
@@ -4823,22 +5114,25 @@ private fun MemoDetailScreen(
     onChanged: () -> Unit
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    var detailContainerBounds by remember { mutableStateOf<Rect?>(null) }
     val imeBottom = with(density) { WindowInsets.ime.getBottom(this).toDp() }
     val imeVisible = imeBottom > 0.dp
-    val fabBottomPadding = if (imeVisible) {
-        (imeBottom - BottomBarHeight + FabKeyboardGap).coerceAtLeast(FabKeyboardGap)
-    } else {
-        22.dp
-    }
+    val fabBottomPadding = keyboardAnchoredFabBottomPadding(
+        view = view,
+        containerBounds = detailContainerBounds,
+        imeVisible = imeVisible,
+        density = density
+    )
     val listBottomPadding = if (imeVisible) {
         (imeBottom - BottomBarHeight + DetailListExtraBottom).coerceAtLeast(DetailListExtraBottom)
     } else {
         DetailListExtraBottom
     }
-    val tabs = listOf("アイテム", "ゴミ箱")
+    val tabs = listOf(stringResource(R.string.tab_items), stringResource(R.string.tab_trash))
     val pagerState = rememberPagerState(pageCount = { tabs.size })
     val scope = rememberCoroutineScope()
     val titleFocusRequester = remember { FocusRequester() }
@@ -4984,6 +5278,7 @@ private fun MemoDetailScreen(
 
     var microphonePermissionRequested by remember(memo.id) { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        microphonePermissionRequested = false
         if (granted) {
             keyboardController?.hide()
             speechController.start()
@@ -4991,6 +5286,11 @@ private fun MemoDetailScreen(
         } else {
             onMicrophoneSessionActiveChange(false)
         }
+    }
+    fun requestDetailMicrophonePermission() {
+        if (microphonePermissionRequested) return
+        microphonePermissionRequested = true
+        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     LaunchedEffect(memo.id, titlePattern) {
@@ -5013,8 +5313,7 @@ private fun MemoDetailScreen(
                 keyboardController?.hide()
                 speechController.start()
             } else if (!microphonePermissionRequested) {
-                microphonePermissionRequested = true
-                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                requestDetailMicrophonePermission()
             }
         }
     }
@@ -5057,12 +5356,14 @@ private fun MemoDetailScreen(
     Box(
         Modifier
             .fillMaxSize()
+            .onGloballyPositioned { detailContainerBounds = it.boundsInWindow() }
             .pointerInput(pagerState.currentPage, itemDragActive) {
                 if (itemDragActive) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                     var totalX = 0f
                     var totalY = 0f
+                    var verticalScrollDetected = false
                     var activePointerId = down.id
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
@@ -5071,21 +5372,35 @@ private fun MemoDetailScreen(
                         val delta = change.positionChange()
                         totalX += delta.x
                         totalY += delta.y
+                        if (
+                            pagerState.currentPage == 0 &&
+                            totalX > 0f &&
+                            kotlin.math.abs(totalY) > viewConfiguration.touchSlop &&
+                            kotlin.math.abs(totalY) > kotlin.math.abs(totalX) * 0.75f
+                        ) {
+                            verticalScrollDetected = true
+                        }
                         if (kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
                             if (pagerState.currentPage == 0 && totalX < -DetailBackSwipeThresholdPx) {
                                 change.consume()
                                 scope.launch { pagerState.animateScrollToPage(1) }
                                 break
                             } else if (pagerState.currentPage == 0 && totalX > DetailBackSwipeThresholdPx) {
-                                change.consume()
-                                onFinish()
-                                break
+                                continue
                             } else if (pagerState.currentPage == 1 && totalX > DetailBackSwipeThresholdPx) {
                                 change.consume()
                                 scope.launch { pagerState.animateScrollToPage(0) }
                                 break
                             }
                         }
+                    }
+                    if (
+                        pagerState.currentPage == 0 &&
+                        totalX > DetailBackSwipeThresholdPx &&
+                        !verticalScrollDetected &&
+                        kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f
+                    ) {
+                        onFinish()
                     }
                 }
             }
@@ -5294,71 +5609,72 @@ private fun MemoDetailScreen(
         val showActiveItemJumpButtons = pagerState.currentPage == 0 && activeItemCount >= 20
         val showDetailMicrophone = microphoneEnabled && pagerState.currentPage == 0
         if (showDetailMicrophone || showActiveItemJumpButtons) {
-            val fabAlignment = if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd
-            Row(
-                modifier = Modifier
-                    .align(fabAlignment)
-                    .padding(
-                        start = if (leftHandModeEnabled) 12.dp else 0.dp,
-                        end = if (leftHandModeEnabled) 0.dp else 12.dp,
-                        bottom = fabBottomPadding
-                    ),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.Bottom
-            ) {
-                if (showActiveItemJumpButtons) {
-                    JumpFab(
-                        label = if (leftHandModeEnabled) "⇑" else "⇓",
-                        sizeScale = HomeOperationScale,
-                        onClick = { requestActiveItemJump(if (leftHandModeEnabled) -1 else 1) }
-                    )
-                }
-                if (showDetailMicrophone) {
-                    MicFab(
-                        controller = speechController,
-                        sizeScale = HomeOperationScale,
-                        modifier = Modifier,
-                        onClick = {
-                            if (speechController.partialText.isNotBlank()) {
-                                speechController.commitPartial()
-                                return@MicFab
-                            }
-                            if (speechController.isRunning) {
-                                speechController.stop()
-                                stopDetailVoiceScroll()
-                                onMicrophoneSessionActiveChange(false)
-                            } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                if (memo.title.isBlank() || titleFocused) {
-                                    selectedEntryId = null
-                                    voiceEditingEntryId = null
-                                    focusedItemRequestId = null
-                                    voiceTarget = VoiceTarget.Title
-                                } else {
-                                    voiceEditingEntryId = selectedEntryId ?: voiceEditingEntryId
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Row(
+                    modifier = Modifier
+                        .align(physicalBottomSideAlignment(leftHandModeEnabled))
+                        .absolutePadding(
+                            left = if (leftHandModeEnabled) 12.dp else 0.dp,
+                            right = if (leftHandModeEnabled) 0.dp else 12.dp,
+                            bottom = fabBottomPadding
+                        ),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    if (showActiveItemJumpButtons) {
+                        JumpFab(
+                            label = if (leftHandModeEnabled) "⇑" else "⇓",
+                            sizeScale = HomeOperationScale,
+                            onClick = { requestActiveItemJump(if (leftHandModeEnabled) -1 else 1) }
+                        )
+                    }
+                    if (showDetailMicrophone) {
+                        MicFab(
+                            controller = speechController,
+                            sizeScale = HomeOperationScale,
+                            modifier = Modifier,
+                            onClick = {
+                                if (speechController.partialText.isNotBlank()) {
+                                    speechController.commitPartial()
+                                    return@MicFab
                                 }
-                                keyboardController?.hide()
-                                speechController.start()
-                                onMicrophoneSessionActiveChange(true)
-                            } else {
-                                if (memo.title.isBlank() || titleFocused) {
-                                    selectedEntryId = null
-                                    voiceEditingEntryId = null
-                                    focusedItemRequestId = null
-                                    voiceTarget = VoiceTarget.Title
+                                if (speechController.isRunning) {
+                                    speechController.stop()
+                                    stopDetailVoiceScroll()
+                                    onMicrophoneSessionActiveChange(false)
+                                } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                    if (memo.title.isBlank() || titleFocused) {
+                                        selectedEntryId = null
+                                        voiceEditingEntryId = null
+                                        focusedItemRequestId = null
+                                        voiceTarget = VoiceTarget.Title
+                                    } else {
+                                        voiceEditingEntryId = selectedEntryId ?: voiceEditingEntryId
+                                    }
+                                    keyboardController?.hide()
+                                    speechController.start()
+                                    onMicrophoneSessionActiveChange(true)
                                 } else {
-                                    voiceEditingEntryId = selectedEntryId ?: voiceEditingEntryId
+                                    if (memo.title.isBlank() || titleFocused) {
+                                        selectedEntryId = null
+                                        voiceEditingEntryId = null
+                                        focusedItemRequestId = null
+                                        voiceTarget = VoiceTarget.Title
+                                    } else {
+                                        voiceEditingEntryId = selectedEntryId ?: voiceEditingEntryId
+                                    }
+                                    requestDetailMicrophonePermission()
                                 }
-                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
-                        }
-                    )
-                }
-                if (showActiveItemJumpButtons) {
-                    JumpFab(
-                        label = if (leftHandModeEnabled) "⇓" else "⇑",
-                        sizeScale = HomeOperationScale,
-                        onClick = { requestActiveItemJump(if (leftHandModeEnabled) 1 else -1) }
-                    )
+                        )
+                    }
+                    if (showActiveItemJumpButtons) {
+                        JumpFab(
+                            label = if (leftHandModeEnabled) "⇓" else "⇑",
+                            sizeScale = HomeOperationScale,
+                            onClick = { requestActiveItemJump(if (leftHandModeEnabled) 1 else -1) }
+                        )
+                    }
                 }
             }
         }
@@ -5429,7 +5745,7 @@ private fun DetailTitleArea(
                     ) {
                         if (memo.title.isBlank()) {
                             Text(
-                                "タイトル未入力",
+                                stringResource(R.string.title_untitled),
                                 color = Color(0xFFC0C4CC),
                                 fontSize = titleFontSizeValue.sp,
                                 maxLines = 1,
@@ -5460,7 +5776,7 @@ private fun DetailTitleArea(
                 ),
                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
             ) {
-                Text("全消去", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.action_clear_all), fontSize = 13.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -5635,6 +5951,13 @@ private fun ActiveItemsPage(
         return -targetY
     }
 
+    fun editingAlignedOffset(): Int {
+        val viewportHeight = listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
+        val visibleHeight = (viewportHeight - bottomPaddingPx).coerceAtLeast((viewportHeight * 0.35f).roundToInt())
+        val targetY = (visibleHeight * 0.30f).roundToInt().coerceAtLeast(0)
+        return -targetY
+    }
+
     LaunchedEffect(restoredScrollSerial, restoredScrollTargetEntryId, bottomPadding, memo.entries.size) {
         if (restoredScrollSerial <= 0) return@LaunchedEffect
         val targetId = restoredScrollTargetEntryId ?: return@LaunchedEffect
@@ -5662,7 +5985,9 @@ private fun ActiveItemsPage(
         val targetId = focusedItemRequestId ?: selectedEntryId ?: return@LaunchedEffect
         val index = memo.entries.indexOfFirst { it.id == targetId }
         if (index >= 0) {
-            listState.animateScrollToItem(index = index + listTopAnchorIndexOffset, scrollOffset = bottomAlignedOffset(rowLiftPx))
+            withFrameNanos { }
+            delay(120)
+            listState.animateScrollToItem(index = index + listTopAnchorIndexOffset, scrollOffset = editingAlignedOffset())
         }
     }
 
@@ -6153,7 +6478,7 @@ private fun ActiveItemsPage(
             } else {
                 null
             }
-            val actionLabel = if (keepCompletedItemsInPlace && entry.checked) "戻す" else "完了"
+            val actionLabel = if (keepCompletedItemsInPlace && entry.checked) stringResource(R.string.action_restore) else stringResource(R.string.completed)
             ShoppingEntryRow(
                 entry = entry,
                 displayNumber = displayNumber,
@@ -6266,7 +6591,7 @@ private fun ActiveItemsPage(
         if (doneEntries.isNotEmpty()) {
             item {
                 Text(
-                    text = "完了アイテム",
+                    text = stringResource(R.string.completed_items),
                     color = Color(0xFFD32F2F),
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
@@ -6466,7 +6791,7 @@ private fun ShoppingEntryRow(
     deleteSwipeOffsetX: Float,
     editTapSuppressionSerial: Int,
     recentlyMoved: Boolean,
-    actionLabel: String = "完了",
+    actionLabel: String,
     modifier: Modifier = Modifier,
     onSelect: () -> Unit,
     onPressStarted: () -> Unit,
@@ -6599,7 +6924,7 @@ private fun ShoppingEntryRow(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     decorationBox = { innerTextField ->
                         if (entry.name.isBlank()) {
-                            Text("未入力", color = Color(0xFF9E9E9E), fontSize = sizes.listText)
+                            Text(stringResource(R.string.input_empty), color = Color(0xFF9E9E9E), fontSize = sizes.listText)
                         }
                         innerTextField()
                     }
@@ -6762,7 +7087,7 @@ private fun DoneEntryRow(
 private fun RestoreIconButton(onClick: () -> Unit) {
     val sizes = LocalAppFontSizes.current
     TextButton(onClick = onClick) {
-        Text("戻す", color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
+        Text(stringResource(R.string.action_restore), color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -6781,7 +7106,7 @@ private fun DeletedItemsPage(
         LaunchedEffect(Unit) {
             onListAtTopChanged(true)
         }
-        PlaceholderBody("ゴミ箱は空です。")
+        PlaceholderBody(stringResource(R.string.trash_empty))
         return
     }
     val density = LocalDensity.current
@@ -6889,7 +7214,7 @@ private fun DeletedEntryRow(
     ) {
         if (isDragging) {
             Text(
-                text = "戻す",
+                text = stringResource(R.string.action_restore),
                 color = Color(0xFF1976D2),
                 fontSize = sizes.listAction,
                 fontWeight = FontWeight.Bold,
@@ -6904,14 +7229,14 @@ private fun DeletedEntryRow(
             )
         }
         Text(
-            text = entry.name.ifBlank { "辟｡鬘後・繧｢繧､繝・Β" },
+            text = entry.name.ifBlank { stringResource(R.string.untitled_item) },
             fontSize = sizes.listText,
             color = Color(0xFF666666),
             modifier = Modifier.weight(1f)
         )
         if (isDragging) {
             Text(
-                text = "消去",
+                text = stringResource(R.string.action_erase),
                 color = Color(0xFFD32F2F),
                 fontSize = sizes.listAction,
                 fontWeight = FontWeight.Bold,
@@ -6928,7 +7253,7 @@ private fun DeletedItemsPageLegacy(
     onErase: (ShoppingEntry) -> Unit
 ) {
     if (memo.deletedEntries.isEmpty()) {
-        PlaceholderBody("削除済アイテムはありません")
+        PlaceholderBody(stringResource(R.string.deleted_items_empty))
         return
     }
     LazyColumn(Modifier.fillMaxSize()) {
@@ -6943,9 +7268,9 @@ private fun DeletedItemsPageLegacy(
                     fontSize = 24.sp,
                     modifier = Modifier.padding(end = 10.dp)
                 )
-                Text(entry.name.ifBlank { "無題のアイテム" }, fontSize = 19.sp, color = Color(0xFF666666), modifier = Modifier.weight(1f))
+                Text(entry.name.ifBlank { stringResource(R.string.untitled_item) }, fontSize = 19.sp, color = Color(0xFF666666), modifier = Modifier.weight(1f))
                 RestoreIconButton(onClick = { onRestore(entry) })
-                TextButton(onClick = { onErase(entry) }) { Text("消去", color = Color(0xFFD32F2F)) }
+                TextButton(onClick = { onErase(entry) }) { Text(stringResource(R.string.action_erase), color = Color(0xFFD32F2F)) }
             }
             Divider(color = Color(0xFFE0E0E0))
         }
@@ -7049,6 +7374,7 @@ private fun FavoritesScreen(
     onChanged: () -> Unit
 ) {
     var selectedTab by remember { mutableStateOf(0) }
+    val favoriteItemsListState = rememberLazyListState()
     var listAtTop by remember { mutableStateOf(true) }
     var itemDragActive by remember { mutableStateOf(false) }
     val recentlyRestoredEntryIds = remember { mutableStateListOf<String>() }
@@ -7095,17 +7421,18 @@ private fun FavoritesScreen(
                         )
                     }
             ) {
-                CompactHeader("お気に入り")
+                CompactHeader(stringResource(R.string.nav_favorites))
                 FavoriteScreenTabs(selectedTab = selectedTab, onSelectTab = { selectedTab = it })
                 if (memos.isEmpty()) {
                     LaunchedEffect(selectedTab) {
                         listAtTop = true
                     }
-                    PlaceholderBody("お気に入りはありません")
+                    PlaceholderBody(stringResource(R.string.favorites_empty))
                 } else {
                     when (selectedTab) {
                         0 -> FavoriteItemsOverview(
                             memos = memos,
+                            listState = favoriteItemsListState,
                             leftHandModeEnabled = leftHandModeEnabled,
                             microphoneEnabled = microphoneEnabled,
                             microphoneSessionActive = microphoneSessionActive,
@@ -7159,7 +7486,7 @@ private fun FavoriteScreenTabs(
             .height(52.dp)
             .background(Color.White)
     ) {
-        listOf("アイテム", "ゴミ箱").forEachIndexed { index, label ->
+        listOf(stringResource(R.string.tab_items), stringResource(R.string.tab_trash)).forEachIndexed { index, label ->
             val selected = selectedTab == index
             val isTrash = index == 1
             val selectedColor = if (isTrash) TrashTabSelectedColor else Color(0xFF1976D2)
@@ -7199,6 +7526,7 @@ private fun FavoriteScreenTabs(
 @Composable
 private fun FavoriteItemsOverview(
     memos: List<ShoppingMemo>,
+    listState: LazyListState,
     leftHandModeEnabled: Boolean,
     microphoneEnabled: Boolean,
     microphoneSessionActive: Boolean,
@@ -7217,17 +7545,16 @@ private fun FavoriteItemsOverview(
     onChanged: () -> Unit
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-    val listState = rememberLazyListState()
     val rowBounds = remember { mutableStateMapOf<String, Rect>() }
     val addRowBounds = remember { mutableStateMapOf<String, Rect>() }
     val deleteSwipeThresholdPx = with(density) { 104.dp.toPx() }
     val dragEdgePaddingPx = with(density) { 8.dp.toPx() }
     val fallbackRowHeightPx = with(density) { 56.dp.toPx() }
-    val bottomPaddingPx = with(density) { DetailListExtraBottom.roundToPx() }
     var draggingMemoId by remember { mutableStateOf<String?>(null) }
     var draggingEntryId by remember { mutableStateOf<String?>(null) }
     var draggingChecked by remember { mutableStateOf(false) }
@@ -7248,19 +7575,40 @@ private fun FavoriteItemsOverview(
     var addingMemoId by remember { mutableStateOf<String?>(null) }
     var addingEntryId by remember { mutableStateOf<String?>(null) }
     var addingFocusSerial by remember { mutableStateOf(0) }
+    var selectedFavoriteMemoId by remember { mutableStateOf<String?>(null) }
+    var selectedFavoriteEntryId by remember { mutableStateOf<String?>(null) }
+    var focusedFavoriteMemoId by remember { mutableStateOf<String?>(null) }
+    var focusedFavoriteEntryId by remember { mutableStateOf<String?>(null) }
+    val favoriteEntryCursorRanges = remember { mutableStateMapOf<String, TextRange>() }
     var voiceAddedMemoId by remember { mutableStateOf<String?>(null) }
     var voiceAddedEntryId by remember { mutableStateOf<String?>(null) }
     var voiceAddedScrollSerial by remember { mutableStateOf(0) }
     var listBounds by remember { mutableStateOf<Rect?>(null) }
+    var favoriteContainerBounds by remember { mutableStateOf<Rect?>(null) }
     val listAtTop = !listState.canScrollBackward
     val imeBottom = with(density) { WindowInsets.ime.getBottom(this).toDp() }
     val imeVisible = imeBottom > 0.dp
-    val fabBottomPadding = if (imeVisible) {
-        (imeBottom - BottomBarHeight + FabKeyboardGap).coerceAtLeast(FabKeyboardGap)
+    val listBottomPadding = if (imeVisible) {
+        (imeBottom - BottomBarHeight + DetailListExtraBottom).coerceAtLeast(DetailListExtraBottom)
     } else {
-        22.dp
+        DetailListExtraBottom
     }
-    val microphoneAddHighlightActive = microphoneEnabled && microphoneSessionActive
+    val bottomPaddingPx = with(density) { listBottomPadding.roundToPx() }
+    val fabBottomPadding = keyboardAnchoredFabBottomPadding(
+        view = view,
+        containerBounds = favoriteContainerBounds,
+        imeVisible = imeVisible,
+        density = density
+    )
+    val selectedFavoriteRowKey = selectedFavoriteMemoId?.let { memoId ->
+        selectedFavoriteEntryId?.let { entryId -> "$memoId:$entryId" }
+    }
+    val microphoneEditingFavoriteRowKey = if (microphoneEnabled && microphoneSessionActive) {
+        selectedFavoriteRowKey
+    } else {
+        null
+    }
+    val microphoneAddHighlightActive = microphoneEnabled && microphoneSessionActive && microphoneEditingFavoriteRowKey == null
 
     LaunchedEffect(listAtTop) {
         onListAtTopChanged(listAtTop)
@@ -7300,6 +7648,11 @@ private fun FavoriteItemsOverview(
         val entry = requestBlankEntry(memo, keepCompletedItemsInPlace)
         addingMemoId = memo.id
         addingEntryId = entry.id
+        selectedFavoriteMemoId = memo.id
+        selectedFavoriteEntryId = entry.id
+        focusedFavoriteMemoId = memo.id
+        focusedFavoriteEntryId = entry.id
+        favoriteEntryCursorRanges[favoriteEntryRowKey(memo.id, entry)] = TextRange(entry.name.length)
         addingFocusSerial++
         onChanged()
     }
@@ -7310,6 +7663,56 @@ private fun FavoriteItemsOverview(
             ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
         }
         onChanged()
+    }
+
+    fun clearFavoriteItemEditing(hideKeyboard: Boolean = false) {
+        focusManager.clearFocus(force = true)
+        if (hideKeyboard) {
+            keyboardController?.hide()
+        }
+        selectedFavoriteMemoId = null
+        selectedFavoriteEntryId = null
+        focusedFavoriteMemoId = null
+        focusedFavoriteEntryId = null
+    }
+
+    fun removeUnusedFavoriteBlankEntry(): Boolean {
+        val memo = memos.firstOrNull { it.id == addingMemoId } ?: return false
+        if (memo.entries.none { it.name.isNotBlank() && (keepCompletedItemsInPlace || !it.checked) }) return false
+        val removed = memo.entries.removeAll { it.name.isBlank() }
+        if (removed) {
+            addingMemoId = null
+            addingEntryId = null
+            clearFavoriteItemEditing()
+        }
+        return removed
+    }
+
+    fun selectFavoriteEntry(memo: ShoppingMemo, entry: ShoppingEntry) {
+        selectedFavoriteMemoId = memo.id
+        selectedFavoriteEntryId = entry.id
+        focusedFavoriteMemoId = memo.id
+        focusedFavoriteEntryId = entry.id
+        if (entry.name.isBlank()) {
+            addingMemoId = memo.id
+            addingEntryId = entry.id
+        } else if (addingEntryId != entry.id) {
+            addingMemoId = null
+            addingEntryId = null
+        }
+    }
+
+    fun insertFavoriteVoiceTextIntoEntry(memo: ShoppingMemo, entry: ShoppingEntry, text: String) {
+        val rowKey = favoriteEntryRowKey(memo.id, entry)
+        val range = coerceTextRange(favoriteEntryCursorRanges[rowKey] ?: TextRange(entry.name.length), entry.name.length)
+        val start = minOf(range.start, range.end)
+        val end = maxOf(range.start, range.end)
+        entry.name = entry.name.substring(0, start) + text + entry.name.substring(end)
+        favoriteEntryCursorRanges[rowKey] = TextRange(start + text.length)
+        ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
+        addingMemoId = null
+        addingEntryId = null
+        clearFavoriteItemEditing(hideKeyboard = true)
     }
 
     fun visibleFavoriteAddMemoId(): String? {
@@ -7356,6 +7759,16 @@ private fun FavoriteItemsOverview(
     fun handleFavoriteVoiceText(text: String) {
         val cleaned = text.trim()
         if (cleaned.isBlank()) return
+        val selectedMemo = memos.firstOrNull { it.id == selectedFavoriteMemoId }
+        val selectedEntry = selectedMemo?.entries?.firstOrNull {
+            it.id == selectedFavoriteEntryId && (keepCompletedItemsInPlace || !it.checked)
+        }
+        if (selectedMemo != null && selectedEntry != null) {
+            onClearRestoredEntryHighlight(selectedEntry.id)
+            insertFavoriteVoiceTextIntoEntry(selectedMemo, selectedEntry, cleaned)
+            onChanged()
+            return
+        }
         val targetMemoId = latestFavoriteVoiceTargetMemoId ?: addingMemoId
         val memo = memos.firstOrNull { it.id == targetMemoId } ?: memos.firstOrNull() ?: return
         val entry = memo.entries.firstOrNull {
@@ -7385,6 +7798,7 @@ private fun FavoriteItemsOverview(
     }
     var microphonePermissionRequested by remember { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        microphonePermissionRequested = false
         if (granted) {
             keyboardController?.hide()
             favoriteSpeechController.start()
@@ -7392,6 +7806,11 @@ private fun FavoriteItemsOverview(
         } else {
             onMicrophoneSessionActiveChange(false)
         }
+    }
+    fun requestFavoriteMicrophonePermission() {
+        if (microphonePermissionRequested) return
+        microphonePermissionRequested = true
+        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     LaunchedEffect(microphoneEnabled, microphoneSessionActive) {
@@ -7404,8 +7823,7 @@ private fun FavoriteItemsOverview(
                 keyboardController?.hide()
                 favoriteSpeechController.start()
             } else if (!microphonePermissionRequested) {
-                microphonePermissionRequested = true
-                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                requestFavoriteMicrophonePermission()
             }
         }
     }
@@ -7508,6 +7926,44 @@ private fun FavoriteItemsOverview(
             index += favoriteSectionItemCount(currentMemo)
         }
         return -1
+    }
+
+    fun favoriteEditingAlignedOffset(): Int {
+        val viewportHeight = listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset
+        val visibleHeight = (viewportHeight - bottomPaddingPx).coerceAtLeast((viewportHeight * 0.35f).roundToInt())
+        val targetY = (visibleHeight * 0.30f).roundToInt().coerceAtLeast(0)
+        return -targetY
+    }
+
+    LaunchedEffect(microphoneEnabled, microphoneSessionActive, selectedFavoriteMemoId, selectedFavoriteEntryId) {
+        if (microphoneSessionActive || !microphoneEnabled) return@LaunchedEffect
+        val memoId = selectedFavoriteMemoId ?: return@LaunchedEffect
+        val entryId = selectedFavoriteEntryId ?: return@LaunchedEffect
+        focusedFavoriteMemoId = memoId
+        focusedFavoriteEntryId = entryId
+        withFrameNanos { }
+        delay(80)
+        keyboardController?.show()
+    }
+
+    LaunchedEffect(
+        focusedFavoriteMemoId,
+        focusedFavoriteEntryId,
+        selectedFavoriteMemoId,
+        selectedFavoriteEntryId,
+        listBottomPadding,
+        memos.size
+    ) {
+        val memoId = focusedFavoriteMemoId ?: selectedFavoriteMemoId ?: return@LaunchedEffect
+        val entryId = focusedFavoriteEntryId ?: selectedFavoriteEntryId ?: return@LaunchedEffect
+        val memo = memos.firstOrNull { it.id == memoId } ?: return@LaunchedEffect
+        val entry = memo.entries.firstOrNull { it.id == entryId } ?: return@LaunchedEffect
+        val targetIndex = favoriteListIndexForEntry(memo, entry)
+        if (targetIndex >= 0) {
+            withFrameNanos { }
+            delay(120)
+            listState.animateScrollToItem(targetIndex, scrollOffset = favoriteEditingAlignedOffset())
+        }
     }
 
     LaunchedEffect(restoredScrollSerial, restoredMemoId, restoredEntryId, memos.size) {
@@ -7924,13 +8380,40 @@ private fun FavoriteItemsOverview(
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { favoriteContainerBounds = it.boundsInWindow() }
+    ) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .onGloballyPositioned { listBounds = it.boundsInWindow() },
+                .onGloballyPositioned { listBounds = it.boundsInWindow() }
+                .pointerInput(draggingMemoId, draggingEntryId) {
+                    if (draggingEntryId != null) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        var totalMove = Offset.Zero
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            totalMove += change.positionChange()
+                            if (
+                                totalMove.getDistance() > viewConfiguration.touchSlop &&
+                                kotlin.math.abs(totalMove.y) > kotlin.math.abs(totalMove.x)
+                            ) {
+                                clearFavoriteItemEditing(hideKeyboard = true)
+                                if (removeUnusedFavoriteBlankEntry()) {
+                                    onChanged()
+                                }
+                                break
+                            }
+                        }
+                    }
+                },
             state = listState,
-            contentPadding = PaddingValues(bottom = DetailListExtraBottom)
+            contentPadding = PaddingValues(bottom = listBottomPadding)
         ) {
             memos.forEach { memo ->
                 val activeEntries = favoriteEntriesForDisplay(memo)
@@ -7953,59 +8436,128 @@ private fun FavoriteItemsOverview(
                         items = activeEntries,
                         key = { _, entry -> favoriteEntryRowKey(memo.id, entry) }
                     ) { index, entry ->
-                        val isAddingEntry = memo.id == addingMemoId && entry.id == addingEntryId
+                        val rowKey = favoriteEntryRowKey(memo.id, entry)
+                        val rowSelected = selectedFavoriteMemoId == memo.id && selectedFavoriteEntryId == entry.id
+                        val rowFocused = focusedFavoriteMemoId == memo.id && focusedFavoriteEntryId == entry.id
+                        val rowDragging = draggingMemoId == memo.id && draggingEntryId == entry.id
+                        val rowDeleteSwiping = rowDragging && dragOffsetX > 0f
                         val displayNumber = if (entry.name.isNotBlank()) {
                             activeEntries.take(index + 1).count { it.name.isNotBlank() }
                         } else {
                             null
                         }
-                        if (isAddingEntry) {
-                            FavoriteEditableEntryRow(
-                                entry = entry,
-                                displayNumber = displayNumber,
-                                focusRequestSerial = addingFocusSerial,
-                                onFocusRequestConsumed = { },
-                                onNameChanged = { updateFavoriteEntryName(memo, entry, it) },
-                                onComplete = {
-                                    if (entry.name.isNotBlank()) {
-                                        entry.checked = true
-                                        addingMemoId = null
-                                        addingEntryId = null
-                                        ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
-                                        onChanged()
+                        ShoppingEntryRow(
+                            entry = entry,
+                            displayNumber = displayNumber,
+                            selected = rowSelected,
+                            shouldRequestFocus = rowFocused,
+                            cursorRange = favoriteEntryCursorRanges[rowKey],
+                            microphoneHighlighted = microphoneEditingFavoriteRowKey == rowKey,
+                            isDragging = rowDragging,
+                            dragOffsetY = if (rowDragging) dragOffsetY else 0f,
+                            isDeleteSwiping = rowDeleteSwiping,
+                            deleteSwipeOffsetX = if (rowDragging) dragOffsetX else 0f,
+                            editTapSuppressionSerial = 0,
+                            recentlyMoved = recentlyRestoredEntryIds.contains(entry.id) &&
+                                !rowSelected &&
+                                microphoneEditingFavoriteRowKey != rowKey,
+                            actionLabel = if (keepCompletedItemsInPlace && entry.checked) stringResource(R.string.action_restore) else stringResource(R.string.completed),
+                            modifier = Modifier
+                                .onGloballyPositioned { rowBounds[rowKey] = it.boundsInWindow() }
+                                .then(
+                                    if (rowDragging) {
+                                        Modifier.zIndex(1f)
+                                    } else {
+                                        Modifier.animateItem().zIndex(0f)
                                     }
+                                ),
+                            onSelect = { selectFavoriteEntry(memo, entry) },
+                            onPressStarted = {
+                                onClearRestoredEntryHighlight(entry.id)
+                                clearFavoriteItemEditing(hideKeyboard = true)
+                                if (removeUnusedFavoriteBlankEntry()) {
+                                    onChanged()
                                 }
-                            )
-                        } else {
-                            FavoriteActiveEntryRow(
-                                memoId = memo.id,
-                                entry = entry,
-                                number = displayNumber ?: index + 1,
-                                rowBounds = rowBounds,
-                                isDragging = draggingMemoId == memo.id && draggingEntryId == entry.id,
-                                dragOffsetX = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetX else 0f,
-                                dragOffsetY = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetY else 0f,
-                                recentlyRestored = recentlyRestoredEntryIds.contains(entry.id),
-                                actionLabel = if (keepCompletedItemsInPlace && entry.checked) "戻す" else "完了",
-                                onComplete = {
-                                    onClearRestoredEntryHighlight(entry.id)
-                                    entry.checked = if (keepCompletedItemsInPlace && entry.checked) false else true
+                            },
+                            onEditRequested = {
+                                onClearRestoredEntryHighlight(entry.id)
+                                selectFavoriteEntry(memo, entry)
+                                favoriteSpeechController.stop()
+                            },
+                            onNumberClick = {
+                                if (entry.name.isNotBlank()) {
+                                    entry.colorMark = (entry.colorMark + 1) % 4
+                                    clearFavoriteItemEditing()
+                                    onChanged()
+                                }
+                            },
+                            onFocusConsumed = {
+                                focusedFavoriteMemoId = null
+                                focusedFavoriteEntryId = null
+                            },
+                            onCursorChanged = { range -> favoriteEntryCursorRanges[rowKey] = range },
+                            onFocused = {
+                                onClearRestoredEntryHighlight(entry.id)
+                                selectedFavoriteMemoId = memo.id
+                                selectedFavoriteEntryId = entry.id
+                                favoriteSpeechController.stop()
+                            },
+                            onFocusCleared = {
+                                if (selectedFavoriteMemoId == memo.id && selectedFavoriteEntryId == entry.id && !microphoneSessionActive) {
+                                    selectedFavoriteMemoId = null
+                                    selectedFavoriteEntryId = null
+                                }
+                            },
+                            onNameChanged = {
+                                onClearRestoredEntryHighlight(entry.id)
+                                entry.name = it
+                                if (it.isBlank()) {
+                                    addingMemoId = memo.id
+                                    addingEntryId = entry.id
+                                } else if (addingMemoId == memo.id && addingEntryId == entry.id) {
+                                    addingMemoId = null
+                                    addingEntryId = null
+                                }
+                                if (
+                                    it.isBlank() &&
+                                    rowSelected &&
+                                    memo.entries.any { other ->
+                                        other.id != entry.id &&
+                                            other.name.isNotBlank() &&
+                                            (keepCompletedItemsInPlace || !other.checked)
+                                    }
+                                ) {
+                                    memo.entries.removeAll { other -> other.id != entry.id && other.name.isBlank() }
+                                } else {
                                     ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
-                                    onChanged()
-                                },
-                                onTrash = {
-                                    onClearRestoredEntryHighlight(entry.id)
-                                    moveFavoriteEntryToTrash(memo, entry, keepCompletedItemsInPlace)
-                                    onChanged()
-                                },
-                                onDragStart = {
-                                    onClearRestoredEntryHighlight(entry.id)
-                                    startDrag(memo, entry)
-                                },
-                                onDrag = { deltaX, deltaY -> drag(memo, entry, deltaX, deltaY) },
-                                onDragEnd = { endDrag(memo, entry) }
-                            )
-                        }
+                                }
+                                onChanged()
+                            },
+                            onComplete = {
+                                onClearRestoredEntryHighlight(entry.id)
+                                entry.checked = if (keepCompletedItemsInPlace && entry.checked) false else true
+                                addingMemoId = null
+                                addingEntryId = null
+                                clearFavoriteItemEditing()
+                                ensureDisplayBlankEntry(memo, keepCompletedItemsInPlace)
+                                onChanged()
+                            },
+                            onDelete = {
+                                onClearRestoredEntryHighlight(entry.id)
+                                moveFavoriteEntryToTrash(memo, entry, keepCompletedItemsInPlace)
+                                clearFavoriteItemEditing()
+                                onChanged()
+                            },
+                            onReorderStart = { startDrag(memo, entry) },
+                            onReorderDrag = { deltaY -> drag(memo, entry, 0f, deltaY) },
+                            onReorderEnd = { endDrag(memo, entry) },
+                            onDeleteSwipeStart = {
+                                onClearRestoredEntryHighlight(entry.id)
+                                startDrag(memo, entry)
+                            },
+                            onDeleteSwipeDrag = { deltaX, deltaY -> drag(memo, entry, deltaX, deltaY) },
+                            onDeleteSwipeEnd = { endDrag(memo, entry) }
+                        )
                     }
                 }
                 item(key = favoriteAddRowKey(memo.id)) {
@@ -8056,54 +8608,55 @@ private fun FavoriteItemsOverview(
 
         val showFavoriteJumpButtons = memos.size >= 2
         if ((microphoneEnabled || showFavoriteJumpButtons) && draggingEntryId == null) {
-            val fabAlignment = if (leftHandModeEnabled) Alignment.BottomStart else Alignment.BottomEnd
-            Row(
-                modifier = Modifier
-                    .align(fabAlignment)
-                    .padding(
-                        start = if (leftHandModeEnabled) 12.dp else 0.dp,
-                        end = if (leftHandModeEnabled) 0.dp else 12.dp,
-                        bottom = fabBottomPadding
-                    ),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.Bottom
-            ) {
-                if (showFavoriteJumpButtons) {
-                    JumpFab(
-                        label = if (leftHandModeEnabled) "⇑" else "⇓",
-                        sizeScale = HomeOperationScale,
-                        onClick = { requestFavoriteSectionJump(if (leftHandModeEnabled) -1 else 1) }
-                    )
-                }
-                if (microphoneEnabled) {
-                    MicFab(
-                        controller = favoriteSpeechController,
-                        sizeScale = HomeOperationScale,
-                        modifier = Modifier,
-                        onClick = {
-                            if (favoriteSpeechController.partialText.isNotBlank()) {
-                                favoriteSpeechController.commitPartial()
-                                return@MicFab
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Row(
+                    modifier = Modifier
+                        .align(physicalBottomSideAlignment(leftHandModeEnabled))
+                        .absolutePadding(
+                            left = if (leftHandModeEnabled) 12.dp else 0.dp,
+                            right = if (leftHandModeEnabled) 0.dp else 12.dp,
+                            bottom = fabBottomPadding
+                        ),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    if (showFavoriteJumpButtons) {
+                        JumpFab(
+                            label = if (leftHandModeEnabled) "⇑" else "⇓",
+                            sizeScale = HomeOperationScale,
+                            onClick = { requestFavoriteSectionJump(if (leftHandModeEnabled) -1 else 1) }
+                        )
+                    }
+                    if (microphoneEnabled) {
+                        MicFab(
+                            controller = favoriteSpeechController,
+                            sizeScale = HomeOperationScale,
+                            modifier = Modifier,
+                            onClick = {
+                                if (favoriteSpeechController.partialText.isNotBlank()) {
+                                    favoriteSpeechController.commitPartial()
+                                    return@MicFab
+                                }
+                                if (favoriteSpeechController.isRunning) {
+                                    favoriteSpeechController.stop()
+                                    onMicrophoneSessionActiveChange(false)
+                                } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                    keyboardController?.hide()
+                                    favoriteSpeechController.start()
+                                    onMicrophoneSessionActiveChange(true)
+                                } else {
+                                    requestFavoriteMicrophonePermission()
+                                }
                             }
-                            if (favoriteSpeechController.isRunning) {
-                                favoriteSpeechController.stop()
-                                onMicrophoneSessionActiveChange(false)
-                            } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                keyboardController?.hide()
-                                favoriteSpeechController.start()
-                                onMicrophoneSessionActiveChange(true)
-                            } else {
-                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                            }
-                        }
-                    )
-                }
-                if (showFavoriteJumpButtons) {
-                    JumpFab(
-                        label = if (leftHandModeEnabled) "⇓" else "⇑",
-                        sizeScale = HomeOperationScale,
-                        onClick = { requestFavoriteSectionJump(if (leftHandModeEnabled) 1 else -1) }
-                    )
+                        )
+                    }
+                    if (showFavoriteJumpButtons) {
+                        JumpFab(
+                            label = if (leftHandModeEnabled) "⇓" else "⇑",
+                            sizeScale = HomeOperationScale,
+                            onClick = { requestFavoriteSectionJump(if (leftHandModeEnabled) 1 else -1) }
+                        )
+                    }
                 }
             }
         }
@@ -8154,7 +8707,7 @@ private fun FavoriteTrashOverview(
         LaunchedEffect(Unit) {
             onListAtTopChanged(true)
         }
-        PlaceholderBody("ゴミ箱は空です。")
+        PlaceholderBody(stringResource(R.string.trash_empty))
         return
     }
 
@@ -8232,7 +8785,7 @@ private fun FavoriteMemoItemsHeader(
                     .padding(start = 10.dp)
             ) {
                 Text(
-                    memoDisplayTitle(memo),
+                    localizedMemoDisplayTitle(memo),
                     color = Color.White,
                     fontSize = 20.sp,
                     lineHeight = 24.sp,
@@ -8241,7 +8794,7 @@ private fun FavoriteMemoItemsHeader(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    "${doneCount}/$totalCount \u4EF6 \u5B8C\u4E86",
+                    completedCountSummary(doneCount, totalCount),
                     color = Color(0xFFE3F2FD),
                     fontSize = 14.sp,
                     lineHeight = 17.sp,
@@ -8256,7 +8809,7 @@ private fun FavoriteMemoItemsHeader(
 @Composable
 private fun FavoriteDoneEntryLabel() {
     Text(
-        text = "\u5B8C\u4E86\u30A2\u30A4\u30C6\u30E0",
+        text = stringResource(R.string.completed_items),
         color = Color(0xFFD32F2F),
         fontSize = 15.sp,
         fontWeight = FontWeight.Bold,
@@ -8287,7 +8840,7 @@ private fun AddListItemButton(
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Text(
-                "+ リストアイテム",
+                stringResource(R.string.add_list_item),
                 color = if (highlighted) Color(0xFF8A5A00) else Color(0xFF1976D2),
                 fontSize = 18.sp,
                 fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Normal
@@ -8369,7 +8922,7 @@ private fun FavoriteEditableEntryRow(
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
             decorationBox = { innerTextField ->
                 if (entry.name.isBlank()) {
-                    Text("未入力", color = Color(0xFF9E9E9E), fontSize = sizes.listText)
+                    Text(stringResource(R.string.input_empty), color = Color(0xFF9E9E9E), fontSize = sizes.listText)
                 }
                 innerTextField()
             }
@@ -8380,7 +8933,7 @@ private fun FavoriteEditableEntryRow(
             contentPadding = PaddingValues(horizontal = 8.dp)
         ) {
             Text(
-                "完了",
+                stringResource(R.string.completed),
                 color = if (entry.name.isBlank()) Color(0xFFBBBBBB) else Color(0xFF1976D2),
                 fontSize = sizes.listAction,
                 fontWeight = FontWeight.Bold
@@ -8437,7 +8990,7 @@ private fun FavoriteMemoItemsSection(
                     .padding(start = 10.dp)
             ) {
                 Text(
-                    memoDisplayTitle(memo),
+                    localizedMemoDisplayTitle(memo),
                     color = Color.White,
                     fontSize = 20.sp,
                     lineHeight = 24.sp,
@@ -8446,7 +8999,7 @@ private fun FavoriteMemoItemsSection(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    "${doneEntries.size}/$totalCount 件 完了",
+                    completedCountSummary(doneEntries.size, totalCount),
                     color = Color(0xFFE3F2FD),
                     fontSize = 14.sp,
                     lineHeight = 17.sp,
@@ -8480,7 +9033,7 @@ private fun FavoriteMemoItemsSection(
             }
             if (doneEntries.isNotEmpty()) {
                 Text(
-                    text = "完了アイテム",
+                    text = stringResource(R.string.completed_items),
                     color = Color(0xFFD32F2F),
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
@@ -8543,7 +9096,7 @@ private fun FavoriteMemoTrashSection(
         ) {
             FavoriteMemoIcon(memo = memo)
             Text(
-                text = memoDisplayTitle(memo),
+                text = localizedMemoDisplayTitle(memo),
                 color = Color.White,
                 fontSize = 20.sp,
                 lineHeight = 24.sp,
@@ -8656,7 +9209,7 @@ private fun FavoriteActiveEntryRow(
     dragOffsetX: Float,
     dragOffsetY: Float,
     recentlyRestored: Boolean,
-    actionLabel: String = "完了",
+    actionLabel: String = "",
     onComplete: () -> Unit,
     onTrash: () -> Unit,
     onDragStart: () -> Unit,
@@ -8794,7 +9347,7 @@ private fun FavoriteDoneEntryRow(
             )
         } else {
             TextButton(onClick = onRestore, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                Text("戻す", color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.action_restore), color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -8831,10 +9384,10 @@ private fun FavoriteDeletedEntryRow(
                 .padding(vertical = 8.dp)
         )
         TextButton(onClick = onRestore, contentPadding = PaddingValues(horizontal = 8.dp)) {
-            Text("戻す", color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.action_restore), color = Color(0xFF1976D2), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
         }
         TextButton(onClick = onErase, contentPadding = PaddingValues(horizontal = 6.dp)) {
-            Text("消去", color = Color(0xFFD32F2F), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.action_erase), color = Color(0xFFD32F2F), fontSize = sizes.listAction, fontWeight = FontWeight.Bold)
         }
     }
     Divider(color = Color(0xFFE0E0E0))
@@ -8850,13 +9403,14 @@ private fun FavoriteEmptyEntryRow() {
             .padding(horizontal = 18.dp, vertical = 18.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text("未入力", color = Color(0xFF9E9E9E), fontSize = sizes.listPlaceholder)
+        Text(stringResource(R.string.input_empty), color = Color(0xFF9E9E9E), fontSize = sizes.listPlaceholder)
     }
     Divider(color = Color(0xFFE0E0E0))
 }
 
 @Composable
 private fun SettingsScreen(
+    memos: List<ShoppingMemo>,
     memoCount: Int,
     oneHandModeEnabled: Boolean,
     onOneHandModeChanged: (Boolean) -> Unit,
@@ -8872,14 +9426,41 @@ private fun SettingsScreen(
     onMicrophoneSettingsChanged: (MicrophoneSettings) -> Unit,
     onResetOperationHelp: () -> Unit
 ) {
+    val context = LocalContext.current
     val listState = rememberLazyListState()
     val microphoneControlsEnabled = !microphoneSettings.disabled
+    val sendableMemos = sendableShoppingMemos(memos)
+    val emailSelectedMemoIds = remember { mutableStateListOf<String>() }
+    var emailSelectionDialogVisible by remember { mutableStateOf(false) }
+    var emailAddressDialogVisible by remember { mutableStateOf(false) }
+    var emailAddress by remember { mutableStateOf("") }
+    var microphonePermissionRequesting by remember { mutableStateOf(false) }
+    val microphonePermissionGrantedMessage = stringResource(R.string.mic_permission_granted_toast)
+    val microphonePermissionDeniedMessage = stringResource(R.string.mic_permission_denied_toast)
+    val microphonePermissionAlreadyGrantedMessage = stringResource(R.string.mic_permission_already_granted_toast)
+    val microphonePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        microphonePermissionRequesting = false
+        Toast.makeText(
+            context,
+            if (granted) microphonePermissionGrantedMessage else microphonePermissionDeniedMessage,
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+    fun requestMicrophonePermissionFromSettings() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(context, microphonePermissionAlreadyGrantedMessage, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (microphonePermissionRequesting) return
+        microphonePermissionRequesting = true
+        microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
     OneHandSettingsFrame(
         oneHandModeEnabled = oneHandModeEnabled,
         listAtTop = !listState.canScrollBackward
     ) { contentModifier ->
         Column(contentModifier) {
-            CompactHeader("設定")
+            CompactHeader(stringResource(R.string.nav_settings))
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -8887,32 +9468,32 @@ private fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 item {
-                    SettingGroup(title = "モード", backgroundColor = SettingsPaleYellow) {
+                    SettingGroup(title = stringResource(R.string.settings_group_mode), backgroundColor = SettingsPaleYellow) {
                         SettingModeRow(
-                            title = "かんたんモード",
-                            description = "基本操作を中心にしたモードです。",
+                            title = stringResource(R.string.settings_simple_mode),
+                            description = stringResource(R.string.settings_simple_mode_desc),
                             selected = simpleModeEnabled,
                             onClick = { onSimpleModeChanged(true) }
                         )
                         SettingModeRow(
-                            title = "高機能モード",
-                            description = "より細かい操作を使うためのモードです。",
+                            title = stringResource(R.string.settings_advanced_mode),
+                            description = stringResource(R.string.settings_advanced_mode_desc),
                             selected = !simpleModeEnabled,
                             onClick = { onSimpleModeChanged(false) }
                         )
                     }
                 }
                 item {
-                    SettingGroup(title = "操作補助", backgroundColor = SettingsPaleGreen) {
+                    SettingGroup(title = stringResource(R.string.settings_group_assist), backgroundColor = SettingsPaleGreen) {
                         SettingToggleRow(
-                            title = "片手だけで操作可能",
-                            description = "一覧を下半分までスクロールできるようにし、片手で操作しやすくします。",
+                            title = stringResource(R.string.settings_one_hand),
+                            description = stringResource(R.string.settings_one_hand_desc),
                             checked = oneHandModeEnabled,
                             onCheckedChange = onOneHandModeChanged
                         )
                         SettingToggleRow(
-                            title = "左手で操作",
-                            description = "左手で操作しやすいボタン配置に変更します。",
+                            title = stringResource(R.string.settings_left_hand),
+                            description = stringResource(R.string.settings_left_hand_desc),
                             checked = leftHandModeEnabled,
                             onCheckedChange = onLeftHandModeChanged
                         )
@@ -8921,18 +9502,36 @@ private fun SettingsScreen(
                             onLargeFontChanged = onLargeFontChanged
                         )
                         SettingToggleRow(
-                            title = "取消しアイテムの位置を変えない",
-                            description = "完了したアイテムをその場に残し、取り消し線だけを付けます。",
+                            title = stringResource(R.string.settings_keep_completed_in_place),
+                            description = stringResource(R.string.settings_keep_completed_in_place_desc),
                             checked = keepCompletedItemsInPlace,
                             onCheckedChange = onKeepCompletedItemsInPlaceChanged
                         )
                     }
                 }
                 item {
-                    SettingGroup(title = "マイク設定", backgroundColor = SettingsPaleYellow) {
+                    SettingGroup(title = stringResource(R.string.settings_group_microphone), backgroundColor = SettingsPaleYellow) {
                         SettingToggleRow(
-                            title = "マイクを利用しない",
-                            description = "チェックすると、このアプリ内のマイク機能を非表示にします。",
+                            title = stringResource(R.string.mic_auto_start),
+                            description = stringResource(R.string.mic_auto_start_desc),
+                            checked = microphoneSettings.startOnLaunch,
+                            enabled = microphoneControlsEnabled,
+                            onCheckedChange = { onMicrophoneSettingsChanged(microphoneSettings.copy(startOnLaunch = it)) }
+                        )
+                        MicrophoneStopTimeoutDropdown(
+                            selectedMinutes = microphoneSettings.stopTimeoutMinutes,
+                            enabled = microphoneControlsEnabled,
+                            onSelected = { onMicrophoneSettingsChanged(microphoneSettings.copy(stopTimeoutMinutes = it)) }
+                        )
+                        SettingActionRow(
+                            title = stringResource(R.string.mic_permission_enable),
+                            description = stringResource(R.string.mic_permission_desc),
+                            buttonText = stringResource(R.string.mic_permission_button),
+                            onClick = ::requestMicrophonePermissionFromSettings
+                        )
+                        SettingToggleRow(
+                            title = stringResource(R.string.mic_disable),
+                            description = stringResource(R.string.mic_disable_desc),
                             checked = microphoneSettings.disabled,
                             onCheckedChange = {
                                 onMicrophoneSettingsChanged(
@@ -8943,26 +9542,30 @@ private fun SettingsScreen(
                                 )
                             }
                         )
-                        SettingToggleRow(
-                            title = "一覧で自動でマイク起動する",
-                            description = "一覧画面で自動でマイクが有効になります。",
-                            checked = microphoneSettings.startOnLaunch,
-                            enabled = microphoneControlsEnabled,
-                            onCheckedChange = { onMicrophoneSettingsChanged(microphoneSettings.copy(startOnLaunch = it)) }
-                        )
-                        MicrophoneStopTimeoutDropdown(
-                            selectedMinutes = microphoneSettings.stopTimeoutMinutes,
-                            enabled = microphoneControlsEnabled,
-                            onSelected = { onMicrophoneSettingsChanged(microphoneSettings.copy(stopTimeoutMinutes = it)) }
+                    }
+                }
+                item {
+                    SettingGroup(title = stringResource(R.string.settings_group_email), backgroundColor = SettingsPaleGreen) {
+                        SettingActionRow(
+                            title = stringResource(R.string.email_send_shopping_list),
+                            description = stringResource(R.string.email_send_shopping_list_desc),
+                            buttonText = stringResource(R.string.action_select),
+                            enabled = sendableMemos.isNotEmpty(),
+                            onClick = {
+                                emailSelectedMemoIds.clear()
+                                emailSelectedMemoIds.addAll(sendableMemos.map { it.id })
+                                emailAddress = ""
+                                emailSelectionDialogVisible = true
+                            }
                         )
                     }
                 }
                 item {
-                    SettingGroup(title = "操作ヘルプ", backgroundColor = SettingsPaleGreen) {
+                    SettingGroup(title = stringResource(R.string.settings_group_help), backgroundColor = SettingsPaleGreen) {
                         SettingActionRow(
-                            title = "操作ヘルプ表示を初期化",
-                            description = "閉じた操作ヘルプをもう一度表示します。",
-                            buttonText = "初期化",
+                            title = stringResource(R.string.help_reset_title),
+                            description = stringResource(R.string.help_reset_desc),
+                            buttonText = stringResource(R.string.action_reset),
                             onClick = onResetOperationHelp
                         )
                     }
@@ -8970,14 +9573,206 @@ private fun SettingsScreen(
             }
         }
     }
+    if (emailSelectionDialogVisible) {
+        EmailMemoSelectionDialog(
+            memos = sendableMemos,
+            selectedMemoIds = emailSelectedMemoIds,
+            onDismiss = { emailSelectionDialogVisible = false },
+            onNext = {
+                emailSelectionDialogVisible = false
+                emailAddressDialogVisible = true
+            }
+        )
+    }
+    if (emailAddressDialogVisible) {
+        val selectedMemos = sendableMemos.filter { it.id in emailSelectedMemoIds }
+        EmailAddressDialog(
+            address = emailAddress,
+            onAddressChange = { emailAddress = it },
+            onDismiss = { emailAddressDialogVisible = false },
+            onSend = {
+                launchShoppingListEmail(context, emailAddress.trim(), selectedMemos)
+                emailAddressDialogVisible = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun EmailMemoSelectionDialog(
+    memos: List<ShoppingMemo>,
+    selectedMemoIds: MutableList<String>,
+    onDismiss: () -> Unit,
+    onNext: () -> Unit
+) {
+    val memoIds = memos.map { it.id }
+    val allSelected = memoIds.isNotEmpty() && memoIds.all { it in selectedMemoIds }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.email_select_cards_title), fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                EmailMemoSelectionRow(
+                    title = stringResource(R.string.email_all_items),
+                    subtitle = stringResource(R.string.email_cards_to_send, memos.size),
+                    checked = allSelected,
+                    onCheckedChange = { checked ->
+                        selectedMemoIds.clear()
+                        if (checked) selectedMemoIds.addAll(memoIds)
+                    }
+                )
+                Divider(color = Color(0xFFE0E0E0))
+                memos.forEach { memo ->
+                    val totalCount = memo.entries.count { it.name.isNotBlank() }
+                    val completedCount = memo.entries.count { it.name.isNotBlank() && it.checked }
+                    EmailMemoSelectionRow(
+                        title = localizedMemoDisplayTitle(memo),
+                        subtitle = stringResource(R.string.email_completed_of_total, totalCount, completedCount),
+                        checked = memo.id in selectedMemoIds,
+                        onCheckedChange = { checked ->
+                            if (checked) {
+                                if (memo.id !in selectedMemoIds) selectedMemoIds.add(memo.id)
+                            } else {
+                                selectedMemoIds.remove(memo.id)
+                            }
+                        }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = selectedMemoIds.isNotEmpty(),
+                onClick = onNext
+            ) {
+                Text(stringResource(R.string.action_next))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        }
+    )
+}
+
+@Composable
+private fun EmailMemoSelectionRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val sizes = LocalAppFontSizes.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 8.dp)
+        ) {
+            Text(
+                title,
+                fontSize = sizes.settingsValue,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                subtitle,
+                fontSize = sizes.settingsBody,
+                color = Color(0xFF666666),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmailAddressDialog(
+    address: String,
+    onAddressChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSend: () -> Unit
+) {
+    val context = LocalContext.current
+    val chooseGmailAccountTitle = stringResource(R.string.email_choose_gmail_account_title)
+    val gmailAccountUnavailableMessage = stringResource(R.string.email_gmail_account_unavailable)
+    val accountLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val selectedAddress = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+            if (!selectedAddress.isNullOrBlank()) {
+                onAddressChange(selectedAddress)
+            }
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.email_address_dialog_title), fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                Text(stringResource(R.string.email_address_dialog_body))
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = {
+                        try {
+                            accountLauncher.launch(gmailAccountChooserIntent(chooseGmailAccountTitle))
+                        } catch (_: Exception) {
+                            Toast.makeText(context, gmailAccountUnavailableMessage, Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
+                ) {
+                    Text(stringResource(R.string.email_choose_gmail_account), color = Color.White, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = address,
+                    onValueChange = onAddressChange,
+                    label = { Text(stringResource(R.string.email_address_label)) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = address.isNotBlank(),
+                onClick = onSend
+            ) {
+                Text(stringResource(R.string.email_open_gmail))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        }
+    )
 }
 
 private val MicrophoneStopOptions = listOf(
-    0 to "停止せず",
-    1 to "1分",
-    3 to "3分",
-    5 to "5分",
-    10 to "10分"
+    0 to R.string.mic_stop_never,
+    1 to R.string.mic_stop_1_minute,
+    3 to R.string.mic_stop_3_minutes,
+    5 to R.string.mic_stop_5_minutes,
+    10 to R.string.mic_stop_10_minutes
 )
 
 @Composable
@@ -9088,10 +9883,10 @@ private fun MicrophoneStopTimeoutDropdown(
 ) {
     val sizes = LocalAppFontSizes.current
     var expanded by remember { mutableStateOf(false) }
-    val selectedLabel = MicrophoneStopOptions.firstOrNull { it.first == selectedMinutes }?.second
+    val selectedLabelResId = MicrophoneStopOptions.firstOrNull { it.first == selectedMinutes }?.second
         ?: MicrophoneStopOptions.first().second
     Column {
-        Text("マイク停止までの時間", fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = Color.Black)
+        Text(stringResource(R.string.mic_stop_time), fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = Color.Black)
         Spacer(Modifier.height(8.dp))
         Box {
             Card(
@@ -9108,14 +9903,14 @@ private fun MicrophoneStopTimeoutDropdown(
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(selectedLabel, fontSize = sizes.settingsValue, modifier = Modifier.weight(1f), color = Color.Black)
+                    Text(stringResource(selectedLabelResId), fontSize = sizes.settingsValue, modifier = Modifier.weight(1f), color = Color.Black)
                     Text("▼", fontSize = 14.sp, color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
                 }
             }
             DropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
-                MicrophoneStopOptions.forEach { (minutes, label) ->
+                MicrophoneStopOptions.forEach { (minutes, labelResId) ->
                     DropdownMenuItem(
-                        text = { Text(label, fontSize = sizes.settingsValue) },
+                        text = { Text(stringResource(labelResId), fontSize = sizes.settingsValue) },
                         onClick = {
                             expanded = false
                             onSelected(minutes)
@@ -9183,17 +9978,17 @@ private fun SettingFontSizeRow(
 ) {
     val sizes = LocalAppFontSizes.current
     Column(Modifier.fillMaxWidth()) {
-        Text("フォント調整", fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = Color.Black)
+        Text(stringResource(R.string.settings_font_adjust), fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = Color.Black)
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             SettingFontSizeChoice(
-                label = "中",
+                label = stringResource(R.string.font_medium),
                 selected = !largeFontEnabled,
                 onClick = { onLargeFontChanged(false) },
                 modifier = Modifier.weight(1f)
             )
             SettingFontSizeChoice(
-                label = "大",
+                label = stringResource(R.string.font_large),
                 selected = largeFontEnabled,
                 onClick = { onLargeFontChanged(true) },
                 modifier = Modifier.weight(1f)
@@ -9264,6 +10059,7 @@ private fun SettingActionRow(
     title: String,
     description: String,
     buttonText: String,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     val sizes = LocalAppFontSizes.current
@@ -9276,12 +10072,13 @@ private fun SettingActionRow(
                 .weight(1f)
                 .padding(end = 12.dp)
         ) {
-            Text(title, fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = Color.Black)
+            Text(title, fontSize = sizes.settingsTitle, fontWeight = FontWeight.Bold, color = if (enabled) Color.Black else Color(0xFFAAAAAA))
             Spacer(Modifier.height(4.dp))
-            Text(description, color = Color(0xFF666666), fontSize = sizes.settingsBody, lineHeight = sizes.settingsBodyLineHeight)
+            Text(description, color = if (enabled) Color(0xFF666666) else Color(0xFFBBBBBB), fontSize = sizes.settingsBody, lineHeight = sizes.settingsBodyLineHeight)
         }
         Button(
             onClick = onClick,
+            enabled = enabled,
             shape = CircleShape,
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
@@ -9521,9 +10318,9 @@ private fun MemoMoveEditScreen(
             .onGloballyPositioned { rootBounds = it.boundsInWindow() }
         ) {
         Column(Modifier.fillMaxSize()) {
-            CompactHeader("カード変更")
+            CompactHeader(stringResource(R.string.nav_card_change))
             if (memos.isEmpty()) {
-                PlaceholderBody("移動できるカードがありません")
+                PlaceholderBody(stringResource(R.string.no_movable_cards))
             } else {
                 if (showInstruction) {
                     EditInstructionPanel(onDismiss = onDismissInstruction)
@@ -9545,7 +10342,7 @@ private fun MemoMoveEditScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         EditMemoPane(
-                            label = "現在の\nカード",
+                            label = stringResource(R.string.current_card),
                             labelColor = Color(0xFF43A047),
                             headerColor = Color(0xFFE8F5E9),
                             side = EditPaneSide.Left,
@@ -9569,7 +10366,7 @@ private fun MemoMoveEditScreen(
                         )
                         Spacer(Modifier.width(12.dp))
                         EditMemoPane(
-                            label = "移動後の\nカード",
+                            label = stringResource(R.string.destination_card),
                             labelColor = Color(0xFF7E57C2),
                             headerColor = Color(0xFFF1E3FF),
                             side = EditPaneSide.Right,
@@ -9645,7 +10442,7 @@ private fun EditInstructionPanel(onDismiss: () -> Unit) {
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    "左右スワイプでカード切替え\n長押しでアイテム移動",
+                    stringResource(R.string.edit_instruction_text),
                     color = Color(0xFF3E2D22),
                     fontSize = sizes.editHelpBody,
                     lineHeight = sizes.editHelpLineHeight,
@@ -9809,7 +10606,7 @@ private fun EditMemoPane(
         ) {
             if (memo == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("カードなし", color = Color(0xFF999999), fontSize = 14.sp)
+                    Text(stringResource(R.string.no_card), color = Color(0xFF999999), fontSize = 14.sp)
                 }
             } else {
                 Column(Modifier.fillMaxSize()) {
@@ -9838,7 +10635,7 @@ private fun EditMemoPane(
                     }
                     if (entries.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("アイテムなし", color = Color(0xFF999999), fontSize = 13.sp)
+                            Text(stringResource(R.string.no_items), color = Color(0xFF999999), fontSize = 13.sp)
                         }
                     } else {
                         LazyColumn(
@@ -9916,7 +10713,7 @@ private fun EditMemoHeader(
         ) {
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    memoDisplayTitle(memo),
+                    localizedMemoDisplayTitle(memo),
                     color = accent,
                     fontSize = sizes.editEntry,
                     lineHeight = sizes.editEntryLineHeight,
@@ -9926,7 +10723,7 @@ private fun EditMemoHeader(
                     textAlign = TextAlign.Center
                 )
                 Text(
-                    "$doneCount/$totalCount 件 完了",
+                    completedCountSummary(doneCount, totalCount),
                     color = accent,
                     fontSize = sizes.editHelpBody,
                     lineHeight = sizes.editHelpLineHeight,
@@ -10082,7 +10879,11 @@ private fun MemoSelectDialog(
         textContentColor = Color.Black,
         title = {
             Text(
-                if (side == EditPaneSide.Left) "左のカードを選択" else "右のカードを選択",
+                if (side == EditPaneSide.Left) {
+                    stringResource(R.string.select_left_card)
+                } else {
+                    stringResource(R.string.select_right_card)
+                },
                 color = Color.Black,
                 fontWeight = FontWeight.Bold
             )
@@ -10110,7 +10911,7 @@ private fun MemoSelectDialog(
                         )
                         Column(Modifier.weight(1f)) {
                             Text(
-                                memo.title.ifBlank { "タイトル未入力" },
+                                localizedMemoDisplayTitle(memo, R.string.title_input),
                                 color = if (selected) Color(0xFFD32F2F) else Color.Black,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
@@ -10118,7 +10919,7 @@ private fun MemoSelectDialog(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                "$doneCount/$totalCount 件 完了",
+                                completedCountSummary(doneCount, totalCount),
                                 color = if (selected) Color(0xFFD32F2F) else Color(0xFF666666),
                                 fontSize = 12.sp
                             )
@@ -10129,7 +10930,7 @@ private fun MemoSelectDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("閉じる", color = Color(0xFF1976D2))
+                Text(stringResource(R.string.action_close), color = Color(0xFF1976D2))
             }
         }
     )
@@ -10147,7 +10948,62 @@ private fun AdsSupportScreen(
     val todayKey = remember { supportAdTodayKey() }
     var watchedDate by remember { mutableStateOf(loadSupportAdWatchDate(context)) }
     var showVideoAd by remember { mutableStateOf(false) }
+    var rewardedAd by remember { mutableStateOf<RewardedAd?>(null) }
+    var rewardedLoading by remember { mutableStateOf(false) }
     val watchedToday = watchedDate == todayKey
+
+    fun completeRewardedAd() {
+        saveSupportAdWatchDate(context, todayKey)
+        watchedDate = todayKey
+        showVideoAd = false
+    }
+
+    fun requestRewardedAdLoad() {
+        if (rewardedLoading || watchedToday) return
+        rewardedLoading = true
+        loadSupportRewardedAd(
+            context = context,
+            onLoaded = { ad ->
+                rewardedAd = ad
+                rewardedLoading = false
+            },
+            onFailed = {
+                rewardedAd = null
+                rewardedLoading = false
+            }
+        )
+    }
+
+    fun showRewardedAd() {
+        if (watchedToday) return
+        val activity = context.findActivity()
+        val ad = rewardedAd
+        if (activity == null || ad == null) {
+            showVideoAd = true
+            return
+        }
+        rewardedAd = null
+        onVideoOverlayVisibleChange(true)
+        ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+            override fun onAdDismissedFullScreenContent() {
+                onVideoOverlayVisibleChange(false)
+                requestRewardedAdLoad()
+            }
+
+            override fun onAdFailedToShowFullScreenContent(error: AdError) {
+                onVideoOverlayVisibleChange(false)
+                showVideoAd = true
+                requestRewardedAdLoad()
+            }
+        }
+        ad.show(activity) {
+            completeRewardedAd()
+        }
+    }
+
+    LaunchedEffect(watchedToday) {
+        if (!watchedToday) requestRewardedAdLoad()
+    }
 
     LaunchedEffect(showVideoAd) {
         onVideoOverlayVisibleChange(showVideoAd)
@@ -10162,13 +11018,13 @@ private fun AdsSupportScreen(
             .background(Color(0xFFFFFDF8))
     ) {
         Column(Modifier.fillMaxSize()) {
-            DummyBannerAd(
+            AdMobBannerAd(
                 modifier = Modifier.fillMaxWidth()
             )
             SupportDeveloperWebView(
                 watchedToday = watchedToday,
                 onWatchAd = {
-                    if (!watchedToday) showVideoAd = true
+                    if (!watchedToday) showRewardedAd()
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -10179,11 +11035,7 @@ private fun AdsSupportScreen(
         if (showVideoAd) {
             DummyRewardedVideoOverlay(
                 onDismiss = { showVideoAd = false },
-                onComplete = {
-                    saveSupportAdWatchDate(context, todayKey)
-                    watchedDate = todayKey
-                    showVideoAd = false
-                }
+                onComplete = ::completeRewardedAd
             )
         }
     }
@@ -10265,6 +11117,8 @@ private fun handleSupportDeveloperLink(
 }
 
 private data class SupportDeveloperText(
+    val htmlLang: String,
+    val htmlDir: String,
     val title: String,
     val thanks: String,
     val messageBefore: String,
@@ -10280,6 +11134,8 @@ private data class SupportDeveloperText(
 
 private fun supportDeveloperText(context: Context): SupportDeveloperText {
     return SupportDeveloperText(
+        htmlLang = context.getString(R.string.support_ad_html_lang),
+        htmlDir = context.getString(R.string.support_ad_html_dir),
         title = context.getString(R.string.support_ad_title),
         thanks = context.getString(R.string.support_ad_thanks),
         messageBefore = context.getString(R.string.support_ad_message_before),
@@ -10309,7 +11165,7 @@ private fun supportDeveloperHtml(
 
     return """
         <!doctype html>
-        <html lang="ja">
+        <html lang="${text.htmlLang.htmlEscaped()}" dir="${text.htmlDir.htmlEscaped()}">
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=4.0, user-scalable=yes">
@@ -10554,6 +11410,63 @@ private fun String.htmlEscaped(): String {
 }
 
 @Composable
+private fun AdMobBannerAd(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val adView = remember(context) {
+        AdView(context).apply {
+            setAdSize(AdSize.BANNER)
+            adUnitId = AdMobSampleBannerAdUnitId
+            loadAd(AdRequest.Builder().build())
+        }
+    }
+    DisposableEffect(adView) {
+        onDispose { adView.destroy() }
+    }
+    Surface(
+        modifier = modifier.height(54.dp),
+        color = Color(0xFFF6F7F2),
+        border = BorderStroke(1.dp, Color(0xFFD7E6CC))
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            AndroidView(
+                modifier = Modifier
+                    .width(320.dp)
+                    .height(50.dp),
+                factory = { adView }
+            )
+        }
+    }
+}
+
+@Composable
+private fun AdMobDummyUnitCard(
+    title: String,
+    adUnitId: String,
+    status: String
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xFFFFFDE7),
+        border = BorderStroke(1.dp, Color(0xFFFFE082))
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+        ) {
+            Text(title, color = Color.Black, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text("Ad unit: $adUnitId", color = Color(0xFF5D4037), fontSize = 12.sp)
+            Spacer(Modifier.height(4.dp))
+            Text(status, color = Color(0xFF6D4C41), fontSize = 13.sp, lineHeight = 17.sp)
+        }
+    }
+}
+
+@Composable
 private fun DummyBannerAd(modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier.height(54.dp),
@@ -10596,7 +11509,7 @@ private fun SupportDeveloperPanel(
             SupportHeader()
             Spacer(Modifier.height(18.dp))
             Text(
-                text = "いつもありがとうございます！",
+                text = stringResource(R.string.support_ad_thanks),
                 color = Color(0xFF4A2E1F),
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
@@ -10612,7 +11525,11 @@ private fun SupportDeveloperPanel(
             SupportWatchButton(watchedToday = watchedToday, onClick = onWatchAd)
             Spacer(Modifier.height(10.dp))
             Text(
-                text = if (watchedToday) "本日は視聴済みです" else "視聴は1日1回までです",
+                text = if (watchedToday) {
+                    stringResource(R.string.support_ad_watch_button_done)
+                } else {
+                    stringResource(R.string.support_ad_watch_limit)
+                },
                 color = Color(0xFF666666),
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold
@@ -10652,7 +11569,7 @@ private fun SupportHeader() {
             drawPath(wave, Color.White)
         }
         Text(
-            text = "開発者を応援する",
+            text = stringResource(R.string.support_ad_title),
             modifier = Modifier.align(Alignment.Center),
             color = Color(0xFF1B5E20),
             fontSize = 28.sp,
@@ -10705,7 +11622,7 @@ private fun SupportMessage() {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "このアプリは、開発を継続するための",
+            text = stringResource(R.string.support_ad_cost_before),
             color = Color(0xFF3E2D22),
             fontSize = 20.sp,
             fontWeight = FontWeight.Bold,
@@ -10713,20 +11630,20 @@ private fun SupportMessage() {
             lineHeight = 28.sp
         )
         Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            Text("運営費", color = Color(0xFF558B2F), fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Text("がかかっています。", color = Color(0xFF3E2D22), fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.support_ad_cost_emphasis), color = Color(0xFF558B2F), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.support_ad_cost_after), color = Color(0xFF3E2D22), fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(14.dp))
         Text(
-            text = "よろしければ、広告を視聴して",
+            text = stringResource(R.string.support_ad_message_before),
             color = Color(0xFF3E2D22),
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
         )
         Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            Text("開発者を応援", color = Color(0xFFFF6F7F), fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Text("していただけると嬉しいです。", color = Color(0xFF3E2D22), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.support_ad_message_emphasis), color = Color(0xFFFF6F7F), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.support_ad_message_after), color = Color(0xFF3E2D22), fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -10752,7 +11669,7 @@ private fun SupportBenefitPanel() {
                 shape = RoundedCornerShape(6.dp)
             ) {
                 Text(
-                    text = "応援していただくと…",
+                    text = stringResource(R.string.support_ad_benefits_title),
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 7.dp),
                     color = Color.White,
                     fontSize = 17.sp,
@@ -10763,22 +11680,22 @@ private fun SupportBenefitPanel() {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SupportBenefitItem(
                     icon = "🌱",
-                    title = "開発の継続",
-                    body = "新しい機能や改善を\n続けることができます",
+                    title = stringResource(R.string.support_ad_benefit_continue_title),
+                    body = stringResource(R.string.support_ad_benefit_continue_body),
                     titleColor = Color(0xFF2E7D32),
                     modifier = Modifier.weight(1f)
                 )
                 SupportBenefitItem(
                     icon = "❤",
-                    title = "より良いアプリに",
-                    body = "使いやすく、便利な\nアプリになります",
+                    title = stringResource(R.string.support_ad_benefit_better_title),
+                    body = stringResource(R.string.support_ad_benefit_better_body),
                     titleColor = Color(0xFFEF6C73),
                     modifier = Modifier.weight(1f)
                 )
                 SupportBenefitItem(
                     icon = "🎁",
-                    title = "新機能の追加",
-                    body = "ご要望の多い機能を\n実現していきます",
+                    title = stringResource(R.string.support_ad_benefit_features_title),
+                    body = stringResource(R.string.support_ad_benefit_features_body),
                     titleColor = Color(0xFFF57F17),
                     modifier = Modifier.weight(1f)
                 )
@@ -10844,14 +11761,18 @@ private fun SupportWatchButton(
             Spacer(Modifier.width(14.dp))
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = if (watchedToday) "本日の応援は完了しました" else "動画広告を視聴して応援する",
+                    text = if (watchedToday) {
+                        stringResource(R.string.support_ad_watch_button_done)
+                    } else {
+                        stringResource(R.string.support_ad_watch_button)
+                    },
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
                     lineHeight = 24.sp
                 )
                 if (!watchedToday) {
-                    Text("(約30秒)", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.support_ad_watch_duration), fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -10883,10 +11804,10 @@ private fun SupportThanksBox() {
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text("応援してくださり、ありがとうございます！", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF3E2D22))
+                Text(stringResource(R.string.support_ad_footer_title), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF3E2D22))
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "皆さまの応援が、より良いアプリ作りの大きな力になっています。",
+                    stringResource(R.string.support_ad_footer_body),
                     fontSize = 14.sp,
                     color = Color(0xFF333333),
                     lineHeight = 20.sp
@@ -10902,6 +11823,7 @@ private fun DummyRewardedVideoOverlay(
     onComplete: () -> Unit
 ) {
     var remainingSeconds by remember { mutableStateOf(5) }
+    val remainingText = stringResource(R.string.rewarded_remaining, remainingSeconds)
 
     BackHandler { onDismiss() }
     LaunchedEffect(Unit) {
@@ -10926,7 +11848,7 @@ private fun DummyRewardedVideoOverlay(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "動画広告（ダミー）",
+                text = stringResource(R.string.rewarded_dummy_title),
                 color = Color.White,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold
@@ -10943,15 +11865,15 @@ private fun DummyRewardedVideoOverlay(
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("▶", color = Color.White, fontSize = 56.sp, fontWeight = FontWeight.Bold)
-                        Text("応援広告を再生中", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.rewarded_playing), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(6.dp))
-                        Text("実広告に差し替えるための仮画面です", color = Color(0xFFDDEEDD), fontSize = 13.sp)
+                        Text(stringResource(R.string.rewarded_placeholder), color = Color(0xFFDDEEDD), fontSize = 13.sp)
                     }
                 }
             }
             Spacer(Modifier.height(18.dp))
             Text(
-                text = if (remainingSeconds > 0) "視聴完了まで あと ${remainingSeconds} 秒" else "視聴完了できます",
+                text = if (remainingSeconds > 0) remainingText else stringResource(R.string.rewarded_ready),
                 color = Color.White,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold
@@ -10969,10 +11891,10 @@ private fun DummyRewardedVideoOverlay(
                     .fillMaxWidth()
                     .height(54.dp)
             ) {
-                Text("視聴完了", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.rewarded_complete), fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
             TextButton(onClick = onDismiss) {
-                Text("閉じる", color = Color.White)
+                Text(stringResource(R.string.action_close), color = Color.White)
             }
         }
     }
@@ -11068,23 +11990,25 @@ private fun BottomIconBar(
     onFavorite: () -> Unit,
     onAds: () -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(86.dp)
-            .navigationBarsPadding()
-            .background(Color.White),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        BottomIcon(R.drawable.icon_ad, R.drawable.nav_selected_ad, "広告", screen == Screen.Ads, onAds)
-        if (!simpleModeEnabled) {
-            BottomIcon(R.drawable.icon_edit, R.drawable.nav_selected_edit, "カード変更", screen == Screen.Edit, onEdit)
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(86.dp)
+                .navigationBarsPadding()
+                .background(Color.White),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BottomIcon(R.drawable.icon_ad, R.drawable.nav_selected_ad, stringResource(R.string.nav_ads), screen == Screen.Ads, onAds)
+            if (!simpleModeEnabled) {
+                BottomIcon(R.drawable.icon_edit, R.drawable.nav_selected_edit, stringResource(R.string.nav_card_change), screen == Screen.Edit, onEdit)
+            }
+            BottomIcon(R.drawable.icon_home_nav, R.drawable.nav_selected_home, stringResource(R.string.nav_home), screen == Screen.Home, onHome)
+            if (!simpleModeEnabled) {
+                BottomIcon(R.drawable.icon_favorite_nav, R.drawable.nav_selected_favorite, stringResource(R.string.nav_favorites), screen == Screen.Favorites, onFavorite)
+            }
+            BottomIcon(R.drawable.icon_settings_nav, R.drawable.nav_selected_settings, stringResource(R.string.nav_settings), screen == Screen.Settings, onSettings)
         }
-        BottomIcon(R.drawable.icon_home_nav, R.drawable.nav_selected_home, "ホーム", screen == Screen.Home, onHome)
-        if (!simpleModeEnabled) {
-            BottomIcon(R.drawable.icon_favorite_nav, R.drawable.nav_selected_favorite, "お気に入り", screen == Screen.Favorites, onFavorite)
-        }
-        BottomIcon(R.drawable.icon_settings_nav, R.drawable.nav_selected_settings, "設定", screen == Screen.Settings, onSettings)
     }
 }
 
@@ -11092,41 +12016,77 @@ private fun BottomIconBar(
 private fun InitialModeSelectionDialog(
     onSelect: (Boolean) -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = {},
-        title = {
-            Text(
-                "モード選択",
-                fontWeight = FontWeight.Bold
-            )
-        },
-        text = {
-            Column {
+    Dialog(onDismissRequest = {}) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp),
+            shape = RoundedCornerShape(18.dp),
+            color = Color.White,
+            tonalElevation = 0.dp,
+            shadowElevation = 8.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp, vertical = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 Text(
-                    "かんたんモードと、高機能モードのどちらを使用しますか。",
-                    fontSize = 16.sp,
-                    lineHeight = 22.sp
+                    stringResource(R.string.initial_mode_title),
+                    color = Color.Black,
+                    fontSize = 30.sp,
+                    lineHeight = 36.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(18.dp))
                 Text(
-                    "※モードは設定からいつでも変更できます。",
-                    color = Color(0xFF666666),
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp
+                    stringResource(R.string.initial_mode_question),
+                    color = Color.Black,
+                    fontSize = 23.sp,
+                    lineHeight = 32.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
                 )
-            }
-        },
-        confirmButton = {
-            Button(onClick = { onSelect(true) }) {
-                Text("かんたんモード")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = { onSelect(false) }) {
-                Text("高機能モード")
+                Spacer(Modifier.height(18.dp))
+                Text(
+                    stringResource(R.string.initial_mode_note),
+                    color = Color.Black,
+                    fontSize = 20.sp,
+                    lineHeight = 28.sp,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(24.dp))
+                Button(
+                    onClick = { onSelect(true) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 58.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFE3F2FD),
+                        contentColor = Color.Black
+                    ),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)
+                ) {
+                    Text(stringResource(R.string.settings_simple_mode), color = Color.Black, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(10.dp))
+                TextButton(
+                    onClick = { onSelect(false) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 58.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp)
+                ) {
+                    Text(stringResource(R.string.settings_advanced_mode), color = Color.Black, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
-    )
+    }
 }
 
 @Composable
