@@ -7448,6 +7448,13 @@ private fun FavoritesScreen(
                             restoredEntryId = restoredEntryId,
                             restoredScrollSerial = restoredScrollSerial,
                             onClearRestoredEntryHighlight = { recentlyRestoredEntryIds.remove(it) },
+                            onEntryRestored = { memo, entry ->
+                                recentlyRestoredEntryIds.remove(entry.id)
+                                recentlyRestoredEntryIds.add(entry.id)
+                                restoredMemoId = memo.id
+                                restoredEntryId = entry.id
+                                restoredScrollSerial++
+                            },
                             onChanged = onChanged
                         )
                         else -> FavoriteTrashOverview(
@@ -7542,6 +7549,7 @@ private fun FavoriteItemsOverview(
     restoredEntryId: String?,
     restoredScrollSerial: Int,
     onClearRestoredEntryHighlight: (String) -> Unit,
+    onEntryRestored: (ShoppingMemo, ShoppingEntry) -> Unit,
     onChanged: () -> Unit
 ) {
     val context = LocalContext.current
@@ -7601,7 +7609,12 @@ private fun FavoriteItemsOverview(
         density = density
     )
     val selectedFavoriteRowKey = selectedFavoriteMemoId?.let { memoId ->
-        selectedFavoriteEntryId?.let { entryId -> "$memoId:$entryId" }
+        selectedFavoriteEntryId?.let { entryId ->
+            memos.firstOrNull { it.id == memoId }
+                ?.entries
+                ?.firstOrNull { it.id == entryId }
+                ?.let { entry -> favoriteEntryRowKey(memoId, entry) }
+        }
     }
     val microphoneEditingFavoriteRowKey = if (microphoneEnabled && microphoneSessionActive) {
         selectedFavoriteRowKey
@@ -8586,8 +8599,10 @@ private fun FavoriteItemsOverview(
                             dragOffsetX = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetX else 0f,
                             dragOffsetY = if (draggingMemoId == memo.id && draggingEntryId == entry.id) dragOffsetY else 0f,
                             onRestore = {
-                                entry.checked = false
-                                ensureDisplayBlankEntry(memo)
+                                onClearRestoredEntryHighlight(entry.id)
+                                val restored = restoreEntryToActiveBottom(memo, entry, keepCompletedItemsInPlace)
+                                clearFavoriteItemEditing()
+                                onEntryRestored(memo, restored)
                                 onChanged()
                             },
                             onTrash = {
@@ -9156,7 +9171,11 @@ private fun favoriteVisibleGroup(memo: ShoppingMemo, checked: Boolean): List<Sho
 }
 
 private fun favoriteEntryRowKey(memoId: String, entry: ShoppingEntry): String {
-    return "$memoId:${entry.id}"
+    return if (entry.checked) {
+        "$memoId:done:${entry.id}"
+    } else {
+        "$memoId:entry:${entry.id}"
+    }
 }
 
 private fun favoriteMemoHeaderKey(memoId: String): String {
@@ -9316,7 +9335,6 @@ private fun FavoriteDoneEntryRow(
             .zIndex(if (isDragging) 1f else 0f)
             .background(CompletedEntryBackground)
             .onGloballyPositioned { rowBounds[rowKey] = it.boundsInWindow() }
-            .then(swipeModifier)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -9335,6 +9353,7 @@ private fun FavoriteDoneEntryRow(
             textDecoration = TextDecoration.LineThrough,
             modifier = Modifier
                 .weight(1f)
+                .then(swipeModifier)
                 .padding(vertical = 8.dp)
         )
         if (isDragging) {
