@@ -162,4 +162,8 @@
     <string name="shopping_memo_title">购物备忘录</string>
     <string name="image_change_title">更换 %1$s 的图片</string>
     <string name="support_ad_benefit_features_title">添加新功能</string>
+    <string name="settings_group_privacy">隐私</string>
+    <string name="settings_privacy_options">隐私选项</string>
+    <string name="settings_privacy_options_desc">查看或更改与广告相关的隐私选择。</string>
+    <string name="action_open">打开</string>
 </resources>

@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">Memo sa Pamimili</string>
     <string name="image_change_title">Palitan ang larawan ng %1$s</string>
     <string name="support_ad_benefit_features_title">Magdagdag ng bagong feature</string>
+    <string name="settings_group_privacy">Privacy</string>
+    <string name="settings_privacy_options">Mga pagpipilian sa privacy</string>
+    <string name="settings_privacy_options_desc">Suriin o baguhin ang iyong mga pagpipilian sa privacy para sa mga ad.</string>
+    <string name="action_open">Buksan</string>
 </resources>

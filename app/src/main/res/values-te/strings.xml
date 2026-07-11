@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">షాపింగ్ మెమో</string>
     <string name="image_change_title">%1$s చిత్రం మార్చండి</string>
     <string name="support_ad_benefit_features_title">కొత్త ఫీచర్లు జోడించు</string>
+    <string name="settings_group_privacy">గోప్యత</string>
+    <string name="settings_privacy_options">గోప్యత ఎంపికలు</string>
+    <string name="settings_privacy_options_desc">ప్రకటనలకు సంబంధించిన మీ గోప్యత ఎంపికలను చూడండి లేదా మార్చండి.</string>
+    <string name="action_open">తెరవండి</string>
 </resources>

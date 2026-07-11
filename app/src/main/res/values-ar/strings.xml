@@ -162,4 +162,8 @@
     <string name="shopping_memo_title">مذكرة التسوق</string>
     <string name="image_change_title">تغيير صورة %1$s</string>
     <string name="support_ad_benefit_features_title">ميزات جديدة</string>
+    <string name="settings_group_privacy">الخصوصية</string>
+    <string name="settings_privacy_options">خيارات الخصوصية</string>
+    <string name="settings_privacy_options_desc">راجع أو غيّر خيارات الخصوصية المتعلقة بالإعلانات.</string>
+    <string name="action_open">فتح</string>
 </resources>

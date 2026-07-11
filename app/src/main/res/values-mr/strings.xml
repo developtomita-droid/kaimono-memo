@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">खरेदी नोंद</string>
     <string name="image_change_title">%1$s प्रतिमा बदला</string>
     <string name="support_ad_benefit_features_title">नवीन सुविधा जोडा</string>
+    <string name="settings_group_privacy">गोपनीयता</string>
+    <string name="settings_privacy_options">गोपनीयता पर्याय</string>
+    <string name="settings_privacy_options_desc">जाहिरातींसाठीचे तुमचे गोपनीयता पर्याय पहा किंवा बदला.</string>
+    <string name="action_open">उघडा</string>
 </resources>

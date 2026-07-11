@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">வாங்கும் குறிப்பு</string>
     <string name="image_change_title">%1$s படத்தை மாற்று</string>
     <string name="support_ad_benefit_features_title">புதிய அம்சங்களை சேர்</string>
+    <string name="settings_group_privacy">தனியுரிமை</string>
+    <string name="settings_privacy_options">தனியுரிமை விருப்பங்கள்</string>
+    <string name="settings_privacy_options_desc">விளம்பரங்களுக்கான உங்கள் தனியுரிமைத் தேர்வுகளைப் பார்க்கவும் அல்லது மாற்றவும்.</string>
+    <string name="action_open">திற</string>
 </resources>

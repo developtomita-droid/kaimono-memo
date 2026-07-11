@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">Alışveriş Notu</string>
     <string name="image_change_title">%1$s resmini değiştir</string>
     <string name="support_ad_benefit_features_title">Yeni özellikler ekle</string>
+    <string name="settings_group_privacy">Gizlilik</string>
+    <string name="settings_privacy_options">Gizlilik seçenekleri</string>
+    <string name="settings_privacy_options_desc">Reklamlarla ilgili gizlilik tercihlerinizi inceleyin veya değiştirin.</string>
+    <string name="action_open">Aç</string>
 </resources>

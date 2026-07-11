@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">Notatka zakupowa</string>
     <string name="image_change_title">Zmień obraz %1$s</string>
     <string name="support_ad_benefit_features_title">Dodaj nowe funkcje</string>
+    <string name="settings_group_privacy">Prywatność</string>
+    <string name="settings_privacy_options">Opcje prywatności</string>
+    <string name="settings_privacy_options_desc">Sprawdź lub zmień ustawienia prywatności dotyczące reklam.</string>
+    <string name="action_open">Otwórz</string>
 </resources>

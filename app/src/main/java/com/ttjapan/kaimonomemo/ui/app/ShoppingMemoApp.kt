@@ -868,7 +868,11 @@ private fun restoreEntryToActiveBottom(
 }
 
 @Composable
-fun ShoppingMemoApp() {
+fun ShoppingMemoApp(
+    canRequestAds: Boolean,
+    privacyOptionsRequired: Boolean,
+    onShowPrivacyOptions: () -> Unit
+) {
     val context = LocalContext.current
     val initialSimpleModeEnabled = remember { loadSimpleModeEnabled(context) }
     val memos = remember {
@@ -1182,6 +1186,7 @@ fun ShoppingMemoApp() {
                     }
                 }
                 Screen.Ads -> AdsSupportScreen(
+                    canRequestAds = canRequestAds,
                     onVideoOverlayVisibleChange = { supportAdVideoVisible = it }
                 )
                 Screen.Edit -> MemoMoveEditScreen(
@@ -1235,6 +1240,8 @@ fun ShoppingMemoApp() {
                     onKeepCompletedItemsInPlaceChanged = ::updateKeepCompletedItemsInPlace,
                     microphoneSettings = microphoneSettings,
                     onMicrophoneSettingsChanged = ::updateMicrophoneSettings,
+                    privacyOptionsRequired = privacyOptionsRequired,
+                    onShowPrivacyOptions = onShowPrivacyOptions,
                     onResetOperationHelp = { updateEditHelpVisible(true) },
                     onHome = { currentScreen = Screen.Home }
                 )
@@ -9504,6 +9511,8 @@ private fun SettingsScreen(
     onKeepCompletedItemsInPlaceChanged: (Boolean) -> Unit,
     microphoneSettings: MicrophoneSettings,
     onMicrophoneSettingsChanged: (MicrophoneSettings) -> Unit,
+    privacyOptionsRequired: Boolean,
+    onShowPrivacyOptions: () -> Unit,
     onResetOperationHelp: () -> Unit,
     onHome: () -> Unit
 ) {
@@ -9644,6 +9653,21 @@ private fun SettingsScreen(
                                 emailSelectionDialogVisible = true
                             }
                         )
+                    }
+                }
+                if (privacyOptionsRequired) {
+                    item {
+                        SettingGroup(
+                            title = stringResource(R.string.settings_group_privacy),
+                            backgroundColor = SettingsPaleYellow
+                        ) {
+                            SettingActionRow(
+                                title = stringResource(R.string.settings_privacy_options),
+                                description = stringResource(R.string.settings_privacy_options_desc),
+                                buttonText = stringResource(R.string.action_open),
+                                onClick = onShowPrivacyOptions
+                            )
+                        }
                     }
                 }
                 item {
@@ -11028,6 +11052,7 @@ private fun supportAdTodayKey(): String {
 
 @Composable
 private fun AdsSupportScreen(
+    canRequestAds: Boolean,
     onVideoOverlayVisibleChange: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
@@ -11043,7 +11068,7 @@ private fun AdsSupportScreen(
     }
 
     fun requestRewardedAdLoad() {
-        if (rewardedLoading || watchedToday) return
+        if (!canRequestAds || rewardedLoading || watchedToday) return
         rewardedLoading = true
         loadSupportRewardedAd(
             context = context,
@@ -11084,8 +11109,8 @@ private fun AdsSupportScreen(
         }
     }
 
-    LaunchedEffect(watchedToday) {
-        if (!watchedToday) requestRewardedAdLoad()
+    LaunchedEffect(watchedToday, canRequestAds) {
+        if (canRequestAds && !watchedToday) requestRewardedAdLoad()
     }
 
     DisposableEffect(Unit) {
@@ -11099,6 +11124,7 @@ private fun AdsSupportScreen(
     ) {
         Column(Modifier.fillMaxSize()) {
             AdMobBannerAd(
+                canRequestAds = canRequestAds,
                 modifier = Modifier.fillMaxWidth()
             )
             SupportDeveloperWebView(
@@ -11483,9 +11509,13 @@ private fun String.htmlEscaped(): String {
 }
 
 @Composable
-private fun AdMobBannerAd(modifier: Modifier = Modifier) {
+private fun AdMobBannerAd(
+    canRequestAds: Boolean,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
-    val adView = remember(context) {
+    val adView = remember(context, canRequestAds) {
+        if (!canRequestAds) return@remember null
         AdView(context).apply {
             setAdSize(AdSize.BANNER)
             adUnitId = AdMobBannerAdUnitId
@@ -11493,7 +11523,7 @@ private fun AdMobBannerAd(modifier: Modifier = Modifier) {
         }
     }
     DisposableEffect(adView) {
-        onDispose { adView.destroy() }
+        onDispose { adView?.destroy() }
     }
     Surface(
         modifier = modifier.height(54.dp),
@@ -11505,12 +11535,14 @@ private fun AdMobBannerAd(modifier: Modifier = Modifier) {
                 .fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
-            AndroidView(
-                modifier = Modifier
-                    .width(320.dp)
-                    .height(50.dp),
-                factory = { adView }
-            )
+            if (adView != null) {
+                AndroidView(
+                    modifier = Modifier
+                        .width(320.dp)
+                        .height(50.dp),
+                    factory = { adView }
+                )
+            }
         }
     }
 }

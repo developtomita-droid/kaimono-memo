@@ -162,4 +162,8 @@
     <string name="shopping_memo_title">Ghi chú mua sắm</string>
     <string name="image_change_title">Đổi ảnh của %1$s</string>
     <string name="support_ad_benefit_features_title">Tính năng mới</string>
+    <string name="settings_group_privacy">Quyền riêng tư</string>
+    <string name="settings_privacy_options">Lựa chọn quyền riêng tư</string>
+    <string name="settings_privacy_options_desc">Xem lại hoặc thay đổi lựa chọn quyền riêng tư cho quảng cáo.</string>
+    <string name="action_open">Mở</string>
 </resources>

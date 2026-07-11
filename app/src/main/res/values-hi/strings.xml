@@ -162,4 +162,8 @@
     <string name="shopping_memo_title">खरीदारी मेमो</string>
     <string name="image_change_title">%1$s की छवि बदलें</string>
     <string name="support_ad_benefit_features_title">नई सुविधाएँ</string>
+    <string name="settings_group_privacy">निजता</string>
+    <string name="settings_privacy_options">निजता विकल्प</string>
+    <string name="settings_privacy_options_desc">विज्ञापनों से जुड़े अपने निजता विकल्प देखें या बदलें।</string>
+    <string name="action_open">खोलें</string>
 </resources>

@@ -162,4 +162,8 @@
     <string name="shopping_memo_title">買い物メモ</string>
     <string name="image_change_title">%1$s の画像変更</string>
     <string name="support_ad_benefit_features_title">新機能の追加</string>
+    <string name="settings_group_privacy">プライバシー</string>
+    <string name="settings_privacy_options">プライバシー設定</string>
+    <string name="settings_privacy_options_desc">広告に関するプライバシーの選択内容を確認・変更します。</string>
+    <string name="action_open">開く</string>
 </resources>

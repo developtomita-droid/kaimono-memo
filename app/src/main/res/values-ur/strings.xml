@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">خریداری میمو</string>
     <string name="image_change_title">%1$s تصویر بدلیں</string>
     <string name="support_ad_benefit_features_title">نئی خصوصیات شامل کریں</string>
+    <string name="settings_group_privacy">رازداری</string>
+    <string name="settings_privacy_options">رازداری کے اختیارات</string>
+    <string name="settings_privacy_options_desc">اشتہارات سے متعلق اپنی رازداری کی ترجیحات دیکھیں یا تبدیل کریں۔</string>
+    <string name="action_open">کھولیں</string>
 </resources>

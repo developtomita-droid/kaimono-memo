@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">কেনাকাটার মেমো</string>
     <string name="image_change_title">%1$s ছবি বদলান</string>
     <string name="support_ad_benefit_features_title">নতুন ফিচার যোগ করুন</string>
+    <string name="settings_group_privacy">গোপনীয়তা</string>
+    <string name="settings_privacy_options">গোপনীয়তার বিকল্প</string>
+    <string name="settings_privacy_options_desc">বিজ্ঞাপন সংক্রান্ত গোপনীয়তার পছন্দ পর্যালোচনা বা পরিবর্তন করুন।</string>
+    <string name="action_open">খুলুন</string>
 </resources>

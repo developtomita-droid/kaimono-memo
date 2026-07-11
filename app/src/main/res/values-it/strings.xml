@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">Memo Spesa</string>
     <string name="image_change_title">Cambia immagine di %1$s</string>
     <string name="support_ad_benefit_features_title">Aggiungi nuove funzioni</string>
+    <string name="settings_group_privacy">Privacy</string>
+    <string name="settings_privacy_options">Opzioni sulla privacy</string>
+    <string name="settings_privacy_options_desc">Controlla o modifica le tue scelte sulla privacy per gli annunci.</string>
+    <string name="action_open">Apri</string>
 </resources>

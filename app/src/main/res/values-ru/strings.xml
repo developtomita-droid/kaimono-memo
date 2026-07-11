@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">Заметки покупок</string>
     <string name="image_change_title">Сменить изображение %1$s</string>
     <string name="support_ad_benefit_features_title">Добавить новые функции</string>
+    <string name="settings_group_privacy">Конфиденциальность</string>
+    <string name="settings_privacy_options">Настройки конфиденциальности</string>
+    <string name="settings_privacy_options_desc">Проверьте или измените настройки конфиденциальности для рекламы.</string>
+    <string name="action_open">Открыть</string>
 </resources>

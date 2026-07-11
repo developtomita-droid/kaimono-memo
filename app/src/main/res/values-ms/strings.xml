@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">Memo Membeli-belah</string>
     <string name="image_change_title">Tukar imej %1$s</string>
     <string name="support_ad_benefit_features_title">Tambah ciri baharu</string>
+    <string name="settings_group_privacy">Privasi</string>
+    <string name="settings_privacy_options">Pilihan privasi</string>
+    <string name="settings_privacy_options_desc">Semak atau ubah pilihan privasi pengiklanan anda.</string>
+    <string name="action_open">Buka</string>
 </resources>

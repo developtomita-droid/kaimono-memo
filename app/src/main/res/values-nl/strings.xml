@@ -163,4 +163,8 @@
     <string name="shopping_memo_title">Boodschappenmemo</string>
     <string name="image_change_title">Afbeelding van %1$s wijzigen</string>
     <string name="support_ad_benefit_features_title">Nieuwe functies toevoegen</string>
+    <string name="settings_group_privacy">Privacy</string>
+    <string name="settings_privacy_options">Privacyopties</string>
+    <string name="settings_privacy_options_desc">Bekijk of wijzig je privacykeuzes voor advertenties.</string>
+    <string name="action_open">Openen</string>
 </resources>
