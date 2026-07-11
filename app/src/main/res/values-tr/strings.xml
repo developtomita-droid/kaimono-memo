@@ -12,7 +12,7 @@
     <string name="support_ad_footer_title">Desteğiniz için teşekkürler!</string>
     <string name="support_ad_footer_body">Desteğiniz bu uygulamayı geliştirmemize yardımcı olur.</string>
     <string name="support_ad_watch_button">Destek için video reklam izle</string>
-    <string name="support_ad_watch_button_done">Bugünkü destek tamamlandı</string>
+    <string name="support_ad_watch_button_done">İzlediğiniz için teşekkürler. Bugünkü destek tamamlandı.</string>
     <string name="support_ad_watch_duration">(yaklaşık 30 sn)</string>
     <string name="support_ad_watch_limit">Günde bir kez izleyebilirsiniz</string>
     <string name="temporary_memo_title">Geçici Not</string>

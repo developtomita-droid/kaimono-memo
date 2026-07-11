@@ -11,7 +11,7 @@
     <string name="support_ad_footer_title">Danke für Ihre Unterstützung!</string>
     <string name="support_ad_footer_body">Ihre Unterstützung hilft uns, diese App weiter zu verbessern.</string>
     <string name="support_ad_watch_button">Videoanzeige ansehen und unterstützen</string>
-    <string name="support_ad_watch_button_done">Die heutige Unterstützung ist abgeschlossen</string>
+    <string name="support_ad_watch_button_done">Vielen Dank fürs Anschauen. Die heutige Unterstützung ist abgeschlossen.</string>
     <string name="support_ad_watch_duration">(ca. 30 Sek.)</string>
     <string name="support_ad_watch_limit">Einmal pro Tag möglich</string>
     <string name="temporary_memo_title">Temporäre Notiz</string>

@@ -11,7 +11,7 @@
     <string name="support_ad_footer_title">Cảm ơn bạn đã ủng hộ!</string>
     <string name="support_ad_footer_body">Sự ủng hộ của bạn giúp chúng tôi tiếp tục cải thiện ứng dụng này.</string>
     <string name="support_ad_watch_button">Xem quảng cáo video để ủng hộ</string>
-    <string name="support_ad_watch_button_done">Ủng hộ hôm nay đã hoàn tất</string>
+    <string name="support_ad_watch_button_done">Cảm ơn bạn đã xem. Ủng hộ hôm nay đã hoàn tất.</string>
     <string name="support_ad_watch_duration">(khoảng 30 giây)</string>
     <string name="support_ad_watch_limit">Bạn có thể xem một lần mỗi ngày</string>
     <string name="temporary_memo_title">Ghi chú tạm thời</string>

@@ -12,7 +12,7 @@
     <string name="support_ad_footer_title">Bedankt voor je steun!</string>
     <string name="support_ad_footer_body">Je steun helpt ons deze app te blijven verbeteren.</string>
     <string name="support_ad_watch_button">Bekijk een videoadvertentie om ons te steunen</string>
-    <string name="support_ad_watch_button_done">De steun van vandaag is voltooid</string>
+    <string name="support_ad_watch_button_done">Bedankt voor het kijken. De steun van vandaag is voltooid.</string>
     <string name="support_ad_watch_duration">(ongeveer 30 sec)</string>
     <string name="support_ad_watch_limit">Je kunt één keer per dag kijken</string>
     <string name="temporary_memo_title">Tijdelijke memo</string>

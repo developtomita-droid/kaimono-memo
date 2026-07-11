@@ -11,7 +11,7 @@
     <string name="support_ad_footer_title">응원해 주셔서 감사합니다!</string>
     <string name="support_ad_footer_body">여러분의 응원이 더 좋은 앱을 만드는 큰 힘이 됩니다.</string>
     <string name="support_ad_watch_button">동영상 광고를 보고 응원하기</string>
-    <string name="support_ad_watch_button_done">오늘의 응원이 완료되었습니다</string>
+    <string name="support_ad_watch_button_done">시청해 주셔서 감사합니다. 오늘의 응원이 완료되었습니다.</string>
     <string name="support_ad_watch_duration">(약 30초)</string>
     <string name="support_ad_watch_limit">하루에 한 번 시청할 수 있습니다</string>
     <string name="temporary_memo_title">임시 메모</string>

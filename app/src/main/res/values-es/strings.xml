@@ -11,7 +11,7 @@
     <string name="support_ad_footer_title">¡Gracias por apoyarnos!</string>
     <string name="support_ad_footer_body">Tu apoyo nos ayuda a seguir mejorando la app.</string>
     <string name="support_ad_watch_button">Ver un anuncio de video para apoyar</string>
-    <string name="support_ad_watch_button_done">El apoyo de hoy está completo</string>
+    <string name="support_ad_watch_button_done">Gracias por ver el anuncio. El apoyo de hoy está completo.</string>
     <string name="support_ad_watch_duration">(unos 30 s)</string>
     <string name="support_ad_watch_limit">Puedes verlo una vez al día</string>
     <string name="temporary_memo_title">Memo temporal</string>

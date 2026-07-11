@@ -12,7 +12,7 @@
     <string name="support_ad_footer_title">সহায়তার জন্য ধন্যবাদ!</string>
     <string name="support_ad_footer_body">আপনার সহায়তা আমাদের এই অ্যাপ উন্নত করতে সাহায্য করে।</string>
     <string name="support_ad_watch_button">সহায়তা করতে ভিডিও বিজ্ঞাপন দেখুন</string>
-    <string name="support_ad_watch_button_done">আজকের সহায়তা সম্পন্ন</string>
+    <string name="support_ad_watch_button_done">দেখার জন্য ধন্যবাদ। আজকের সহায়তা সম্পন্ন হয়েছে।</string>
     <string name="support_ad_watch_duration">(প্রায় ৩০ সেকেন্ড)</string>
     <string name="support_ad_watch_limit">প্রতিদিন একবার দেখা যায়</string>
     <string name="temporary_memo_title">অস্থায়ী মেমো</string>

@@ -43,7 +43,6 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.rememberScrollableState
 import androidx.compose.foundation.gestures.scrollBy
@@ -334,8 +333,8 @@ private const val OneHandScrollSpeedMultiplier = 1.5f
 private const val TemporaryMemoId = "temporary-shopping-memo"
 private const val GoogleAccountType = "com.google"
 private const val GmailPackageName = "com.google.android.gm"
-private const val AdMobSampleBannerAdUnitId = "ca-app-pub-3940256099942544/6300978111"
-private const val AdMobSampleRewardedAdUnitId = "ca-app-pub-3940256099942544/5224354917"
+private const val AdMobBannerAdUnitId = "ca-app-pub-2043305448409536/3094419810"
+private const val AdMobRewardedAdUnitId = "ca-app-pub-2043305448409536/1888736665"
 private const val TemporaryMemoTitle = "一時的メモ"
 private val LegacyTemporaryMemoTitles = setOf("テンポラリ", "お買い物リスト")
 private const val HomeOperationScale = 0.88f
@@ -387,6 +386,43 @@ private fun keyboardAnchoredFabBottomPadding(
     val overlapPx = (bounds.bottom - keyboardTopInWindow).coerceAtLeast(0f)
     return with(density) {
         (overlapPx + FabKeyboardGap.toPx()).toDp().coerceAtLeast(FabKeyboardGap)
+    }
+}
+
+private fun Modifier.homeReturnSwipeOnRelease(
+    enabled: Boolean = true,
+    thresholdPx: Float = DetailBackSwipeThresholdPx,
+    onHome: () -> Unit
+): Modifier {
+    if (!enabled) return this
+    return pointerInput(enabled, thresholdPx) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            var totalX = 0f
+            var totalY = 0f
+            var verticalScrollDetected = false
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (!change.pressed) break
+                val delta = change.positionChange()
+                totalX += delta.x
+                totalY += delta.y
+                if (
+                    kotlin.math.abs(totalY) > viewConfiguration.touchSlop &&
+                    kotlin.math.abs(totalY) > kotlin.math.abs(totalX) * 0.75f
+                ) {
+                    verticalScrollDetected = true
+                }
+            }
+            if (
+                totalX > thresholdPx &&
+                !verticalScrollDetected &&
+                kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f
+            ) {
+                onHome()
+            }
+        }
     }
 }
 
@@ -595,7 +631,7 @@ private fun loadSupportRewardedAd(
 ) {
     RewardedAd.load(
         context,
-        AdMobSampleRewardedAdUnitId,
+        AdMobRewardedAdUnitId,
         AdRequest.Builder().build(),
         object : RewardedAdLoadCallback() {
             override fun onAdLoaded(ad: RewardedAd) {
@@ -1199,7 +1235,8 @@ fun ShoppingMemoApp() {
                     onKeepCompletedItemsInPlaceChanged = ::updateKeepCompletedItemsInPlace,
                     microphoneSettings = microphoneSettings,
                     onMicrophoneSettingsChanged = ::updateMicrophoneSettings,
-                    onResetOperationHelp = { updateEditHelpVisible(true) }
+                    onResetOperationHelp = { updateEditHelpVisible(true) },
+                    onHome = { currentScreen = Screen.Home }
                 )
                 Screen.Favorites -> FavoritesScreen(
                     memos = listOf(temporaryMemo) + activeMemos.filter { it.favorite },
@@ -7383,6 +7420,7 @@ private fun FavoritesScreen(
     var restoredScrollSerial by remember { mutableStateOf(0) }
     val density = LocalDensity.current
     val swipeThresholdPx = with(density) { 72.dp.toPx() }
+    val latestOnHome by rememberUpdatedState(onHome)
 
     OneHandSettingsFrame(
         oneHandModeEnabled = oneHandModeEnabled,
@@ -7395,30 +7433,53 @@ private fun FavoritesScreen(
                     .fillMaxSize()
                     .pointerInput(selectedTab, swipeThresholdPx, itemDragActive) {
                         if (itemDragActive) return@pointerInput
-                        var dragX = 0f
-                        var changed = false
-                        detectHorizontalDragGestures(
-                            onDragStart = {
-                                dragX = 0f
-                                changed = false
-                            },
-                            onHorizontalDrag = { change, dragAmount ->
-                                if (changed) return@detectHorizontalDragGestures
-                                dragX += dragAmount
-                                when {
-                                    selectedTab == 0 && dragX < -swipeThresholdPx -> {
-                                        selectedTab = 1
-                                        changed = true
-                                        change.consume()
-                                    }
-                                    selectedTab == 1 && dragX > swipeThresholdPx -> {
-                                        selectedTab = 0
-                                        changed = true
-                                        change.consume()
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            val startTab = selectedTab
+                            var totalX = 0f
+                            var totalY = 0f
+                            var tabChanged = false
+                            var verticalScrollDetected = false
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) break
+                                val delta = change.positionChange()
+                                totalX += delta.x
+                                totalY += delta.y
+                                if (
+                                    kotlin.math.abs(totalY) > viewConfiguration.touchSlop &&
+                                    kotlin.math.abs(totalY) > kotlin.math.abs(totalX) * 0.75f
+                                ) {
+                                    verticalScrollDetected = true
+                                }
+                                if (!tabChanged && kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f) {
+                                    when {
+                                        startTab == 0 && totalX < -swipeThresholdPx -> {
+                                            selectedTab = 1
+                                            tabChanged = true
+                                            change.consume()
+                                            break
+                                        }
+                                        startTab == 1 && totalX > swipeThresholdPx -> {
+                                            selectedTab = 0
+                                            tabChanged = true
+                                            change.consume()
+                                            break
+                                        }
                                     }
                                 }
                             }
-                        )
+                            if (
+                                !tabChanged &&
+                                startTab == 0 &&
+                                totalX > DetailBackSwipeThresholdPx &&
+                                !verticalScrollDetected &&
+                                kotlin.math.abs(totalX) > kotlin.math.abs(totalY) * 1.25f
+                            ) {
+                                latestOnHome()
+                            }
+                        }
                     }
             ) {
                 CompactHeader(stringResource(R.string.nav_favorites))
@@ -9443,10 +9504,12 @@ private fun SettingsScreen(
     onKeepCompletedItemsInPlaceChanged: (Boolean) -> Unit,
     microphoneSettings: MicrophoneSettings,
     onMicrophoneSettingsChanged: (MicrophoneSettings) -> Unit,
-    onResetOperationHelp: () -> Unit
+    onResetOperationHelp: () -> Unit,
+    onHome: () -> Unit
 ) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    val latestOnHome by rememberUpdatedState(onHome)
     val microphoneControlsEnabled = !microphoneSettings.disabled
     val sendableMemos = sendableShoppingMemos(memos)
     val emailSelectedMemoIds = remember { mutableStateListOf<String>() }
@@ -9478,7 +9541,11 @@ private fun SettingsScreen(
         oneHandModeEnabled = oneHandModeEnabled,
         listAtTop = !listState.canScrollBackward
     ) { contentModifier ->
-        Column(contentModifier) {
+        Column(
+            contentModifier.homeReturnSwipeOnRelease {
+                latestOnHome()
+            }
+        ) {
             CompactHeader(stringResource(R.string.nav_settings))
             LazyColumn(
                 state = listState,
@@ -10966,7 +11033,6 @@ private fun AdsSupportScreen(
     val context = LocalContext.current
     val todayKey = remember { supportAdTodayKey() }
     var watchedDate by remember { mutableStateOf(loadSupportAdWatchDate(context)) }
-    var showVideoAd by remember { mutableStateOf(false) }
     var rewardedAd by remember { mutableStateOf<RewardedAd?>(null) }
     var rewardedLoading by remember { mutableStateOf(false) }
     val watchedToday = watchedDate == todayKey
@@ -10974,7 +11040,6 @@ private fun AdsSupportScreen(
     fun completeRewardedAd() {
         saveSupportAdWatchDate(context, todayKey)
         watchedDate = todayKey
-        showVideoAd = false
     }
 
     fun requestRewardedAdLoad() {
@@ -10998,7 +11063,7 @@ private fun AdsSupportScreen(
         val activity = context.findActivity()
         val ad = rewardedAd
         if (activity == null || ad == null) {
-            showVideoAd = true
+            requestRewardedAdLoad()
             return
         }
         rewardedAd = null
@@ -11011,7 +11076,6 @@ private fun AdsSupportScreen(
 
             override fun onAdFailedToShowFullScreenContent(error: AdError) {
                 onVideoOverlayVisibleChange(false)
-                showVideoAd = true
                 requestRewardedAdLoad()
             }
         }
@@ -11024,9 +11088,6 @@ private fun AdsSupportScreen(
         if (!watchedToday) requestRewardedAdLoad()
     }
 
-    LaunchedEffect(showVideoAd) {
-        onVideoOverlayVisibleChange(showVideoAd)
-    }
     DisposableEffect(Unit) {
         onDispose { onVideoOverlayVisibleChange(false) }
     }
@@ -11048,13 +11109,6 @@ private fun AdsSupportScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-            )
-        }
-
-        if (showVideoAd) {
-            DummyRewardedVideoOverlay(
-                onDismiss = { showVideoAd = false },
-                onComplete = ::completeRewardedAd
             )
         }
     }
@@ -11434,7 +11488,7 @@ private fun AdMobBannerAd(modifier: Modifier = Modifier) {
     val adView = remember(context) {
         AdView(context).apply {
             setAdSize(AdSize.BANNER)
-            adUnitId = AdMobSampleBannerAdUnitId
+            adUnitId = AdMobBannerAdUnitId
             loadAd(AdRequest.Builder().build())
         }
     }

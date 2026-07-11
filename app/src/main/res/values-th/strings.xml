@@ -11,7 +11,7 @@
     <string name="support_ad_footer_title">ขอบคุณสำหรับการสนับสนุน!</string>
     <string name="support_ad_footer_body">การสนับสนุนของคุณช่วยให้เราปรับปรุงแอปนี้ต่อไปได้</string>
     <string name="support_ad_watch_button">ดูโฆษณาวิดีโอเพื่อสนับสนุน</string>
-    <string name="support_ad_watch_button_done">การสนับสนุนวันนี้เสร็จแล้ว</string>
+    <string name="support_ad_watch_button_done">ขอบคุณที่รับชม การสนับสนุนวันนี้เสร็จแล้ว</string>
     <string name="support_ad_watch_duration">(ประมาณ 30 วินาที)</string>
     <string name="support_ad_watch_limit">ดูได้วันละครั้ง</string>
     <string name="temporary_memo_title">บันทึกชั่วคราว</string>

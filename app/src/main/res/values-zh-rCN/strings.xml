@@ -11,7 +11,7 @@
     <string name="support_ad_footer_title">感谢您的支持！</string>
     <string name="support_ad_footer_body">您的支持会帮助我们继续改进这个应用。</string>
     <string name="support_ad_watch_button">观看视频广告来支持</string>
-    <string name="support_ad_watch_button_done">今天的支持已完成</string>
+    <string name="support_ad_watch_button_done">感谢观看。今天的支持已完成。</string>
     <string name="support_ad_watch_duration">（约30秒）</string>
     <string name="support_ad_watch_limit">每天可观看一次</string>
     <string name="temporary_memo_title">临时备忘录</string>

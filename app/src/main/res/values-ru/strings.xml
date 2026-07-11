@@ -12,7 +12,7 @@
     <string name="support_ad_footer_title">Спасибо за поддержку!</string>
     <string name="support_ad_footer_body">Ваша поддержка помогает нам улучшать приложение.</string>
     <string name="support_ad_watch_button">Посмотреть видео-рекламу для поддержки</string>
-    <string name="support_ad_watch_button_done">Поддержка на сегодня завершена</string>
+    <string name="support_ad_watch_button_done">Спасибо за просмотр. Поддержка на сегодня завершена.</string>
     <string name="support_ad_watch_duration">(около 30 сек)</string>
     <string name="support_ad_watch_limit">Можно смотреть один раз в день</string>
     <string name="temporary_memo_title">Временная заметка</string>
