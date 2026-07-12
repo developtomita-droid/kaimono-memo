@@ -1,10 +1,12 @@
 package com.ttjapan.kaimonomemo.data
 
 import android.content.Context
+import com.ttjapan.kaimonomemo.R
 import com.ttjapan.kaimonomemo.model.ShoppingEntry
 import com.ttjapan.kaimonomemo.model.ShoppingMemo
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.NumberFormat
 import java.util.UUID
 
 private const val PREF_NAME = "shopping_memo"
@@ -239,15 +241,20 @@ fun saveEditHelpVisible(context: Context, visible: Boolean) {
         .apply()
 }
 
-fun assignDefaultTitleIfBlank(memo: ShoppingMemo, memos: List<ShoppingMemo>) {
+fun assignDefaultTitleIfBlank(context: Context, memo: ShoppingMemo, memos: List<ShoppingMemo>) {
     if (memo.title.isNotBlank()) return
     val usedTitles = memos.asSequence()
         .filter { it.id != memo.id }
         .map { it.title }
         .toSet()
+    val locale = context.resources.configuration.locales[0]
+    val numberFormat = NumberFormat.getIntegerInstance(locale)
+    fun generatedTitle(number: Int): String {
+        return "${context.getString(R.string.card)} ${numberFormat.format(number)}"
+    }
     var number = 1
-    while ("タイトル$number" in usedTitles) number++
-    memo.title = "タイトル$number"
+    while (generatedTitle(number) in usedTitles) number++
+    memo.title = generatedTitle(number)
 }
 
 private fun readEntries(array: JSONArray?): List<ShoppingEntry> {

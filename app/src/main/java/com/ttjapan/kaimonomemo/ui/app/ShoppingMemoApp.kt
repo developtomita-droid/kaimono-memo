@@ -261,57 +261,6 @@ private data class EditDraggingEntry(
     val entry: ShoppingEntry
 )
 
-private fun matchesVoiceCommand(spoken: String, command: String): Boolean {
-    fun normalize(value: String): String = value.replace(Regex("\\s+"), "").lowercase(Locale.ROOT)
-    val normalizedCommand = normalize(command)
-    return normalizedCommand.isNotBlank() && normalize(spoken) == normalizedCommand
-}
-
-private fun normalizeVoiceToken(value: String): String {
-    return value.replace(Regex("\\s+"), "")
-}
-
-private fun parseVoiceNumberToken(token: String): Int? {
-    val normalizedDigits = token.map { char ->
-        if (char in '０'..'９') ('0'.code + (char.code - '０'.code)).toChar() else char
-    }.joinToString("")
-    normalizedDigits.toIntOrNull()?.let { return it }
-    val values = mapOf(
-        '一' to 1,
-        '二' to 2,
-        '三' to 3,
-        '四' to 4,
-        '五' to 5,
-        '六' to 6,
-        '七' to 7,
-        '八' to 8,
-        '九' to 9
-    )
-    var total = 0
-    var current = 0
-    normalizedDigits.forEach { char ->
-        when (char) {
-            '百' -> {
-                total += (if (current == 0) 1 else current) * 100
-                current = 0
-            }
-            '十' -> {
-                total += (if (current == 0) 1 else current) * 10
-                current = 0
-            }
-            else -> current = values[char] ?: return null
-        }
-    }
-    val parsed = total + current
-    return parsed.takeIf { it > 0 }
-}
-
-private fun extractVoiceItemNumber(spoken: String): Int? {
-    val normalized = normalizeVoiceToken(spoken)
-    val match = Regex("([0-9０-９一二三四五六七八九十百]+)番").find(normalized) ?: return null
-    return parseVoiceNumberToken(match.groupValues[1])
-}
-
 private enum class ScrollAnchor {
     Item,
     AddButton
@@ -335,8 +284,6 @@ private const val GoogleAccountType = "com.google"
 private const val GmailPackageName = "com.google.android.gm"
 private const val AdMobBannerAdUnitId = "ca-app-pub-2043305448409536/3094419810"
 private const val AdMobRewardedAdUnitId = "ca-app-pub-2043305448409536/1888736665"
-private const val TemporaryMemoTitle = "一時的メモ"
-private val LegacyTemporaryMemoTitles = setOf("テンポラリ", "お買い物リスト")
 private const val HomeOperationScale = 0.88f
 private val TrashTabSelectedColor = Color(0xFFE91E63)
 private val SettingsPaleYellow = Color(0xFFFFF8D7)
@@ -480,7 +427,9 @@ private fun appFontSizes(large: Boolean): AppFontSizes {
 
 private val LocalAppFontSizes = staticCompositionLocalOf { appFontSizes(false) }
 
-private fun appLayoutDirection(locale: Locale = Locale.getDefault()): LayoutDirection {
+private fun Context.appLocale(): Locale = resources.configuration.locales[0]
+
+private fun appLayoutDirection(locale: Locale): LayoutDirection {
     return if (locale.language.lowercase(Locale.ROOT) in RtlLanguageCodes) {
         LayoutDirection.Rtl
     } else {
@@ -523,10 +472,6 @@ private fun physicalBottomSideAlignment(leftSide: Boolean): Alignment {
 }
 
 private fun isTemporaryMemo(memo: ShoppingMemo): Boolean = memo.id == TemporaryMemoId
-
-private fun memoDisplayTitle(memo: ShoppingMemo, fallback: String = "タイトル未入力"): String {
-    return if (isTemporaryMemo(memo)) TemporaryMemoTitle else memo.title.ifBlank { fallback }
-}
 
 private fun memoDisplayTitle(context: Context, memo: ShoppingMemo): String {
     return if (isTemporaryMemo(memo)) {
@@ -689,18 +634,8 @@ private fun formatRectForTrace(rect: Rect?): String {
     } ?: "none"
 }
 
-private fun temporaryTitleForMode(simpleModeEnabled: Boolean): String {
-    return TemporaryMemoTitle
-}
-
-private fun isTemporaryDefaultTitle(title: String): Boolean {
-    return title.isBlank() || title == TemporaryMemoTitle || title in LegacyTemporaryMemoTitles
-}
-
-private fun applyTemporaryTitleForMode(memo: ShoppingMemo, simpleModeEnabled: Boolean) {
-    if (isTemporaryDefaultTitle(memo.title)) {
-        memo.title = temporaryTitleForMode(simpleModeEnabled)
-    }
+private fun applyLocalizedTemporaryTitle(context: Context, memo: ShoppingMemo) {
+    memo.title = context.getString(R.string.temporary_memo_title)
 }
 
 @Composable
@@ -874,16 +809,22 @@ fun ShoppingMemoApp(
     onShowPrivacyOptions: () -> Unit
 ) {
     val context = LocalContext.current
+    val appLocale = context.appLocale()
     val initialSimpleModeEnabled = remember { loadSimpleModeEnabled(context) }
     val memos = remember {
         mutableStateListOf<ShoppingMemo>().also { state ->
             val loaded = loadMemos(context).toMutableList()
             val temporaryMemo = loaded.firstOrNull { it.id == TemporaryMemoId }
+            val localizedTemporaryTitle = context.getString(R.string.temporary_memo_title)
+            var temporaryTitleChanged = false
             if (temporaryMemo == null) {
-                loaded.add(0, ShoppingMemo(id = TemporaryMemoId, title = temporaryTitleForMode(initialSimpleModeEnabled)))
-            } else {
-                applyTemporaryTitleForMode(temporaryMemo, initialSimpleModeEnabled)
+                loaded.add(0, ShoppingMemo(id = TemporaryMemoId, title = localizedTemporaryTitle))
+                temporaryTitleChanged = true
+            } else if (temporaryMemo.title != localizedTemporaryTitle) {
+                applyLocalizedTemporaryTitle(context, temporaryMemo)
+                temporaryTitleChanged = true
             }
+            if (temporaryTitleChanged) saveMemos(context, loaded)
             state.addAll(loaded)
         }
     }
@@ -946,7 +887,7 @@ fun ShoppingMemoApp(
     }
     fun updateSimpleMode(enabled: Boolean) {
         simpleModeEnabled = enabled
-        applyTemporaryTitleForMode(temporaryMemo, enabled)
+        applyLocalizedTemporaryTitle(context, temporaryMemo)
         saveSimpleModeEnabled(context, enabled)
         saveModeSelectionCompleted(context, true)
         modeSelectionCompleted = true
@@ -1018,12 +959,12 @@ fun ShoppingMemoApp(
         selectedMemo?.let { memo ->
             pruneBlankEntries(memo)
             if (isTemporaryMemo(memo)) {
-                applyTemporaryTitleForMode(memo, simpleModeEnabled)
+                applyLocalizedTemporaryTitle(context, memo)
             } else if (memo.title.isBlank() && memo.entries.none { it.name.isNotBlank() } && memo.deletedEntries.none { it.name.isNotBlank() }) {
                 memos.remove(memo)
                 selectedMemoId = null
             } else {
-                assignDefaultTitleIfBlank(memo, memos)
+                assignDefaultTitleIfBlank(context, memo, memos)
             }
             recentlyMovedEntryIds.removeAll { id -> memo.entries.any { it.id == id } }
         }
@@ -1032,7 +973,7 @@ fun ShoppingMemoApp(
     }
     fun addMemo() {
         val memo = ShoppingMemo(
-            imagePattern = defaultNewMemoImagePattern(),
+            imagePattern = defaultNewMemoImagePattern(appLocale),
             entries = listOf(ShoppingEntry(name = ""))
         )
         val insertIndex = (memos.indexOfFirst { isTemporaryMemo(it) } + 1)
@@ -1043,7 +984,7 @@ fun ShoppingMemoApp(
     }
     fun finishTemporaryHome() {
         pruneBlankEntries(temporaryMemo)
-        applyTemporaryTitleForMode(temporaryMemo, simpleModeEnabled)
+        applyLocalizedTemporaryTitle(context, temporaryMemo)
         persist()
         currentScreen = Screen.Home
     }
@@ -1065,7 +1006,7 @@ fun ShoppingMemoApp(
     }
     CompositionLocalProvider(
         LocalAppFontSizes provides appFontSizes(largeFontEnabled),
-        LocalLayoutDirection provides appLayoutDirection()
+        LocalLayoutDirection provides appLayoutDirection(appLocale)
     ) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
@@ -3184,6 +3125,7 @@ private fun ImageChangeChoiceDialog(
     onFolder: () -> Unit,
     onPattern: () -> Unit
 ) {
+    val appLocale = LocalContext.current.appLocale()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.image_change_title, localizedMemoDisplayTitle(memo, R.string.card))) },
@@ -3194,7 +3136,7 @@ private fun ImageChangeChoiceDialog(
             ) {
                 ImageChoiceButton(stringResource(R.string.camera), stringResource(R.string.shoot), Color(0xFFE3F2FD), Color(0xFF1565C0), Modifier.weight(1f), onCamera)
                 ImageChoiceButton(stringResource(R.string.folder), stringResource(R.string.photo), Color(0xFFE8F5E9), Color(0xFF2E7D32), Modifier.weight(1f), onFolder)
-                ImageChoiceButton(stringResource(R.string.pattern), stringResource(R.string.pattern_count, activeShoppingVisualPatterns().size), Color(0xFFFFF8E1), Color(0xFFF57F17), Modifier.weight(1f), onPattern)
+                ImageChoiceButton(stringResource(R.string.pattern), stringResource(R.string.pattern_count, activeShoppingVisualPatterns(appLocale).size), Color(0xFFFFF8E1), Color(0xFFF57F17), Modifier.weight(1f), onPattern)
             }
         },
         confirmButton = {},
@@ -3991,47 +3933,6 @@ private fun HomeTrashDisplayButton(
     }
 }
 
-private data class ShoppingImagePattern(
-    val name: String,
-    val symbol: String,
-    val accent: String,
-    val background: Color,
-    val foreground: Color
-)
-
-private val ShoppingImagePatterns = listOf(
-    ShoppingImagePattern("Red cart", "🛒", "＋", Color(0xFFFFEBEE), Color(0xFFD32F2F)),
-    ShoppingImagePattern("Vegetable basket", "🥬", "🥕", Color(0xFFE8F5E9), Color(0xFF2E7D32)),
-    ShoppingImagePattern("Breakfast", "🍞", "🥛", Color(0xFFFFF8E1), Color(0xFFF57F17)),
-    ShoppingImagePattern("Fish", "🐟", "❄", Color(0xFFE1F5FE), Color(0xFF0277BD)),
-    ShoppingImagePattern("Fruit", "🍎", "🍌", Color(0xFFFFF3E0), Color(0xFFE65100)),
-    ShoppingImagePattern("Rice bag", "🍚", "", Color(0xFFF3E5F5), Color(0xFF6A1B9A)),
-    ShoppingImagePattern("Daily goods", "🧴", "✓", Color(0xFFE0F2F1), Color(0xFF00796B)),
-    ShoppingImagePattern("Frozen", "❄", "", Color(0xFFE3F2FD), Color(0xFF1565C0)),
-    ShoppingImagePattern("Camera", "📷", "●", Color(0xFFFCE4EC), Color(0xFFC2185B)),
-    ShoppingImagePattern("Photo", "🖼", "✓", Color(0xFFEDE7F6), Color(0xFF512DA8))
-)
-
-private fun activeShoppingImagePatterns(): List<ShoppingImagePattern> {
-    val shopPattern = if (Locale.getDefault().language == Locale.JAPANESE.language) {
-        ShoppingImagePattern("100 yen shop", "100\n🛍 🏬", "", Color(0xFFFFF3E0), Color(0xFFE65100))
-    } else {
-        ShoppingImagePattern("Shop", "🛍 🏬\n🛒", "", Color(0xFFFFF3E0), Color(0xFFE65100))
-    }
-    return listOf(
-        ShoppingImagePattern("Groceries", "🥬 🍞\n🍚 🐟", "", Color(0xFFE8F5E9), Color(0xFF2E7D32)),
-        ShoppingImagePattern("Cart", "🛒", "", Color(0xFFFFEBEE), Color(0xFFD32F2F)),
-        ShoppingImagePattern("Appliances", "🔌 💡\n📺", "", Color(0xFFE3F2FD), Color(0xFF1565C0)),
-        ShoppingImagePattern("Game", "🎮 ⭐\n🎲", "", Color(0xFFEDE7F6), Color(0xFF512DA8)),
-        ShoppingImagePattern("Restaurant", "🍽 ☕\n🍰", "", Color(0xFFFFF8E1), Color(0xFFF57F17)),
-        ShoppingImagePattern("Clothes and shoes", "👕 👟\n🧢", "", Color(0xFFFCE4EC), Color(0xFFC2185B)),
-        ShoppingImagePattern("Sports goods", "⚽ 🏀\n🎾", "", Color(0xFFE0F2F1), Color(0xFF00796B)),
-        ShoppingImagePattern("Services", "😊 🤝\n✨", "", Color(0xFFFFFDE7), Color(0xFFF9A825)),
-        shopPattern,
-        ShoppingImagePattern("General goods", "🧺 🧴\n🧻", "", Color(0xFFF5F5F5), Color(0xFF616161))
-    )
-}
-
 private enum class ShoppingVisualKind {
     Food,
     Cart,
@@ -4059,7 +3960,7 @@ private enum class GroceryVisualRegion {
     Europe
 }
 
-private fun groceryVisualRegion(locale: Locale = Locale.getDefault()): GroceryVisualRegion {
+private fun groceryVisualRegion(locale: Locale): GroceryVisualRegion {
     val language = locale.language.lowercase(Locale.ROOT)
     return when {
         language == Locale.JAPANESE.language -> GroceryVisualRegion.Japan
@@ -4068,12 +3969,12 @@ private fun groceryVisualRegion(locale: Locale = Locale.getDefault()): GroceryVi
     }
 }
 
-private fun isEnglishLocale(locale: Locale = Locale.getDefault()): Boolean {
+private fun isEnglishLocale(locale: Locale): Boolean {
     return locale.language.lowercase(Locale.ROOT) == Locale.ENGLISH.language
 }
 
-private fun activeShoppingVisualPatterns(): List<ShoppingVisualPattern> {
-    val region = groceryVisualRegion()
+private fun activeShoppingVisualPatterns(locale: Locale): List<ShoppingVisualPattern> {
+    val region = groceryVisualRegion(locale)
     val isJapanese = region == GroceryVisualRegion.Japan
     val foodBackground = when (region) {
         GroceryVisualRegion.Japan -> Color(0xFFFFA7B4)
@@ -4097,14 +3998,14 @@ private fun activeShoppingVisualPatterns(): List<ShoppingVisualPattern> {
     }
 }
 
-private fun defaultNewMemoImagePattern(): Int {
-    val index = activeShoppingVisualPatterns().indexOfFirst { it.kind == ShoppingVisualKind.Cart }
+private fun defaultNewMemoImagePattern(locale: Locale): Int {
+    val index = activeShoppingVisualPatterns(locale).indexOfFirst { it.kind == ShoppingVisualKind.Cart }
     return if (index >= 0) index else 0
 }
 
-private fun shoppingPatternImageResId(kind: ShoppingVisualKind): Int {
+private fun shoppingPatternImageResId(kind: ShoppingVisualKind, locale: Locale): Int {
     return when (kind) {
-        ShoppingVisualKind.Food -> when (groceryVisualRegion()) {
+        ShoppingVisualKind.Food -> when (groceryVisualRegion(locale)) {
             GroceryVisualRegion.Japan -> R.drawable.pattern_food_jp
             GroceryVisualRegion.Asia -> R.drawable.pattern_food_asia
             GroceryVisualRegion.Europe -> R.drawable.pattern_food_europe
@@ -4117,7 +4018,7 @@ private fun shoppingPatternImageResId(kind: ShoppingVisualKind): Int {
         ShoppingVisualKind.Sports -> R.drawable.pattern_sports
         ShoppingVisualKind.Service -> R.drawable.pattern_service
         ShoppingVisualKind.HundredYenShop -> R.drawable.pattern_100_yen_shop
-        ShoppingVisualKind.DiscountShop -> if (isEnglishLocale()) {
+        ShoppingVisualKind.DiscountShop -> if (isEnglishLocale(locale)) {
             R.drawable.pattern_discount_shop
         } else {
             R.drawable.pattern_discount_shop_no_text
@@ -4248,7 +4149,8 @@ private fun calculateBitmapSampleSize(width: Int, height: Int, maxSize: Int): In
 
 @Composable
 private fun ShoppingPatternImage(pattern: Int, modifier: Modifier = Modifier) {
-    val patterns = activeShoppingVisualPatterns()
+    val appLocale = LocalContext.current.appLocale()
+    val patterns = activeShoppingVisualPatterns(appLocale)
     val item = patterns[((pattern % patterns.size) + patterns.size) % patterns.size]
     Box(
         modifier = modifier
@@ -4256,7 +4158,7 @@ private fun ShoppingPatternImage(pattern: Int, modifier: Modifier = Modifier) {
         contentAlignment = Alignment.Center
     ) {
         Image(
-            painter = painterResource(shoppingPatternImageResId(item.kind)),
+            painter = painterResource(shoppingPatternImageResId(item.kind, appLocale)),
             contentDescription = null,
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize()
@@ -4296,7 +4198,7 @@ private fun ShoppingPatternImage(pattern: Int, modifier: Modifier = Modifier) {
                         close()
                     }
                     drawPath(tail, Color(0xFF1976D2))
-                    if (Locale.getDefault().language == Locale.JAPANESE.language) {
+                    if (appLocale.language == Locale.JAPANESE.language) {
                         drawOval(Color.White, topLeft = Offset(sx(0.43f), sy(0.47f)), size = Size(sx(0.22f), sy(0.13f)))
                         drawRoundRect(Color(0xFF90A4AE), Offset(sx(0.42f), sy(0.56f)), Size(sx(0.24f), sy(0.07f)), CornerRadius(u * 0.03f, u * 0.03f))
                     } else {
@@ -4392,7 +4294,7 @@ private fun ShoppingPatternImage(pattern: Int, modifier: Modifier = Modifier) {
                 }
             }
         }
-        if (item.kind == ShoppingVisualKind.HundredYenShop && Locale.getDefault().language == Locale.JAPANESE.language) {
+        if (item.kind == ShoppingVisualKind.HundredYenShop && appLocale.language == Locale.JAPANESE.language) {
             Text(
                 text = "100",
                 color = Color.White,
@@ -4626,7 +4528,8 @@ private fun PatternPickerScreen(
     onBack: () -> Unit,
     onSelect: (Int) -> Unit
 ) {
-    val patterns = activeShoppingVisualPatterns()
+    val appLocale = LocalContext.current.appLocale()
+    val patterns = activeShoppingVisualPatterns(appLocale)
     PatternPickerGridScreen(
         memo = memo,
         patterns = patterns,
@@ -4823,6 +4726,7 @@ private fun ServiceStaffPatternIcon(accent: Color, modifier: Modifier = Modifier
 
 @Composable
 private fun HundredYenShopStorePatternIcon(modifier: Modifier = Modifier) {
+    val appLocale = LocalContext.current.appLocale()
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             val w = size.width
@@ -4872,9 +4776,9 @@ private fun HundredYenShopStorePatternIcon(modifier: Modifier = Modifier) {
             }
             drawLine(Color(0xFFBDBDBD), Offset(w * 0.14f, h * 0.84f), Offset(w * 0.86f, h * 0.84f), strokeWidth = u * 0.025f)
         }
-        if (Locale.getDefault().language == Locale.JAPANESE.language) {
+        if (appLocale.language == Locale.JAPANESE.language) {
             Text(
-                text = "￥100ショップ",
+                text = stringResource(R.string.pattern_hundred_yen_shop),
                 color = Color.White,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
@@ -4889,7 +4793,8 @@ private fun HundredYenShopStorePatternIcon(modifier: Modifier = Modifier) {
 
 @Composable
 private fun FoodBasketPatternIcon(accent: Color, modifier: Modifier = Modifier) {
-    val riceOrBread = if (Locale.getDefault().language == Locale.JAPANESE.language) "🍚" else "🍞"
+    val appLocale = LocalContext.current.appLocale()
+    val riceOrBread = if (appLocale.language == Locale.JAPANESE.language) "🍚" else "🍞"
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             val w = size.width
@@ -4944,6 +4849,7 @@ private fun FridgePatternIcon(accent: Color, modifier: Modifier = Modifier) {
 
 @Composable
 private fun HundredYenShopPatternIcon(modifier: Modifier = Modifier) {
+    val appLocale = LocalContext.current.appLocale()
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             val w = size.width
@@ -4980,9 +4886,9 @@ private fun HundredYenShopPatternIcon(modifier: Modifier = Modifier) {
                 )
             }
         }
-        if (Locale.getDefault().language == Locale.JAPANESE.language) {
+        if (appLocale.language == Locale.JAPANESE.language) {
             Text(
-                text = "￥100ショップ",
+                text = stringResource(R.string.pattern_hundred_yen_shop),
                 color = Color.White,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -5122,7 +5028,8 @@ private fun PatternPickerGridScreen(
 
 @Composable
 private fun OneHandModeBackdrop(modifier: Modifier = Modifier) {
-    val backdropResId = when (groceryVisualRegion()) {
+    val appLocale = LocalContext.current.appLocale()
+    val backdropResId = when (groceryVisualRegion(appLocale)) {
         GroceryVisualRegion.Japan -> R.drawable.one_hand_food_pattern_a
         GroceryVisualRegion.Asia -> R.drawable.one_hand_food_pattern_asia
         GroceryVisualRegion.Europe -> R.drawable.one_hand_food_pattern_europe
