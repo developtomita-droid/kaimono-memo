@@ -3078,40 +3078,50 @@ private fun DeletedMemoCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
         colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(12.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(74.dp)
-                    .background(Color(0xFFFFEBEE), RoundedCornerShape(8.dp)),
-                contentAlignment = Alignment.Center
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                MemoCardImage(memo = memo, modifier = Modifier.size(56.dp))
+                Box(
+                    modifier = Modifier
+                        .size(74.dp)
+                        .background(Color(0xFFFFEBEE), RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    MemoCardImage(memo = memo, modifier = Modifier.size(56.dp))
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 10.dp)
+                ) {
+                    Text(
+                        localizedMemoDisplayTitle(memo),
+                        color = Color(0xFF333333),
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(stringResource(R.string.active_done_count_summary, activeCount, doneCount), color = Color(0xFF777777), fontSize = 13.sp)
+                }
             }
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 10.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    localizedMemoDisplayTitle(memo),
-                    color = Color(0xFF333333),
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(stringResource(R.string.active_done_count_summary, activeCount, doneCount), color = Color(0xFF777777), fontSize = 13.sp)
-            }
-            TextButton(onClick = onRestore) {
-                Text(stringResource(R.string.action_restore), color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
-            }
-            TextButton(onClick = onErase) {
-                Text(stringResource(R.string.action_erase), color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
+                TextButton(onClick = onRestore) {
+                    Text(stringResource(R.string.action_restore), color = Color(0xFF1976D2), fontWeight = FontWeight.Bold)
+                }
+                TextButton(onClick = onErase) {
+                    Text(stringResource(R.string.action_erase), color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
+                }
             }
         }
     }
